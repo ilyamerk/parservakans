@@ -734,6 +734,57 @@ def extract_employment_type(text: str, employment_name: Optional[str] = None) ->
     if re.search(r"полная|частичная|полный|частичный", e): return "ТК"
     return None
 
+def extract_experience(text: str) -> Optional[str]:
+    t = (text or "").lower()
+    if not t:
+        return None
+    if "без опыта" in t:
+        return "Без опыта"
+
+    # полгода / полугода
+    if re.search(r"опыт(?: работы)?\s*(?:от\s*)?(полгода|пол\s*года)", t):
+        return "от 0.5 года"
+
+    patterns = [
+        r"опыт(?: работы)?\s*(?:не менее\s*)?(?:от\s*)?(\d+(?:[\.,]\d+)?)\s*(год|лет|года|месяц|месяца|месяцев)",
+        r"от\s*(\d+(?:[\.,]\d+)?)\s*(год|лет|года|месяц|месяца|месяцев)\s*(?:опыта|стажа)",
+        r"(\d+(?:[\.,]\d+)?)\s*(год|лет|года|месяц|месяца|месяцев)\s*опыт"
+    ]
+    for pat in patterns:
+        m = re.search(pat, t)
+        if not m:
+            continue
+        raw_val, unit = m.group(1), m.group(2)
+        val = raw_val.replace(",", ".")
+        try:
+            num = float(val)
+        except ValueError:
+            num = None
+
+        if num is not None and abs(num - round(num)) < 1e-6:
+            num = int(round(num))
+        value_str = str(num if num is not None else raw_val).strip()
+
+        unit = unit.lower()
+        if unit.startswith("месяц"):
+            unit = "месяцев" if value_str not in {"1", "1.0"} else "месяц"
+        else:
+            # год/лет склонение
+            if value_str in {"1", "1.0"}:
+                unit = "год"
+            elif value_str in {"2", "3", "4"}:
+                unit = "года"
+            else:
+                unit = "лет"
+
+        segment = m.group(0)
+        prefix = "от " if re.search(r"от|не менее", segment) else ""
+        return f"{prefix}{value_str} {unit}".strip()
+
+    if "опыт" in t:
+        return "Опыт требуется"
+    return None
+
 SECTION_HEADS = ["обязанности","что делать","чем предстоит заниматься","задачи"]
 NEXT_HEADS = ["требования","условия","мы предлагаем","о компании","график","контакты","оформление","что мы предлагаем"]
 def extract_responsibilities(html_or_text: str, fallback: Optional[str] = None) -> Optional[str]:
@@ -944,9 +995,12 @@ def map_gr(rows_in):
         emp = desc = None
         pub = None; sal_from = sal_to = None
 
+        soup = None
         try:
             r = _polite_get(sess, u, timeout=15, site="gr")
-            if r.status_code != 200:
+            if r is not None and BeautifulSoup and r.text:
+                soup = BeautifulSoup(r.text, "lxml")
+            if r is not None and r.status_code != 200 and not soup:
                 return {
                     "Должность": title or "Вакансия",
                     "Работодатель": None,
@@ -963,8 +1017,8 @@ def map_gr(rows_in):
                     "Льготы": None,
                     "Обязаности": None,
                     "Ссылка": u,
+                    "__text": None,
                 }
-            soup = BeautifulSoup(r.text, "lxml") if BeautifulSoup else None
         except Exception:
             soup = None
 
@@ -1018,16 +1072,24 @@ def map_gr(rows_in):
                 except Exception:
                     pass
 
-        # производная «в час» из описания (если встречается)
-        hour = None
-        if desc:
-            m = re.search(r"(\d{2,3})\s*₽\s*(?:/|за)?\s*час", desc.replace("руб", "₽"), flags=re.I)
-            if m:
-                try:
-                    hour = float(m.group(1))
-                except Exception:
-                    hour = None
-        shift_sum = hour * 12.0 if hour else None
+        descr = (desc or "").strip()
+        hour, shift_sum = extract_comp(descr)
+        shift_len = None
+        sl = extract_shift_len(descr)
+        if sl:
+            shift_len = sl[1]
+            if isinstance(shift_len, (int, float)) and hour and not shift_sum:
+                shift_sum = hour * float(shift_len)
+        else:
+            shift_len = 12.0 if (hour or shift_sum) else None
+        shift12_out = shift_sum if (isinstance(shift_len, (int, float)) and float(shift_len) == 12.0) else (hour * 12.0 if hour else None)
+
+        graph = extract_schedule_strict(descr, sched_src=None)
+        pay = extract_pay_frequency(descr)
+        employ = extract_employment_type(descr)
+        duties = extract_responsibilities(desc or "", fallback=(descr[:3000] if descr else None))
+        bens = pick_benefits(descr)
+        exp = extract_experience(descr)
 
         return {
             "Должность": (title or "Вакансия").strip(),
@@ -1035,16 +1097,17 @@ def map_gr(rows_in):
             "Дата публикации": pub,
             "ЗП от (т.р.)": sal_from,
             "ЗП до (т.р.)": sal_to,
-            "Средний совокупный доход при графике 2/2 по 12 часов": shift_sum,
+            "Средний совокупный доход при графике 2/2 по 12 часов": shift12_out,
             "В час": hour,
-            "Длительность \nсмены": 12 if hour else None,
-            "Требуемый\nопыт": None,
-            "Труд-во": None,
-            "График": None,
-            "Частота \nвыплат": None,
-            "Льготы": None,
-            "Обязаности": (desc or "").strip()[:2000] if desc else None,
+            "Длительность \nсмены": shift_len,
+            "Требуемый\nопыт": exp,
+            "Труд-во": employ,
+            "График": graph,
+            "Частота \nвыплат": pay,
+            "Льготы": bens,
+            "Обязаности": duties,
             "Ссылка": u,
+            "__text": f"{descr} {duties or ''}".strip() or None,
         }
 
     out = []
@@ -1230,10 +1293,22 @@ def map_avito(rows_in: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         # derive
         descr = (desc or "").strip()
         hour, shift_sum = extract_comp(descr)
+        shift_len = None
+        sl = extract_shift_len(descr)
+        if sl:
+            shift_len = sl[1]
+            if isinstance(shift_len, (int, float)) and hour and not shift_sum:
+                shift_sum = hour * float(shift_len)
+        else:
+            shift_len = 12.0 if (hour or shift_sum) else None
+        shift12_out = shift_sum if (isinstance(shift_len, (int, float)) and float(shift_len) == 12.0) else (hour * 12.0 if hour else None)
+
         graph = extract_schedule_strict(descr, sched_src=None)
         pay   = extract_pay_frequency(descr)
-        duties= extract_responsibilities(desc or "", fallback=None)
+        employ= extract_employment_type(descr)
+        duties= extract_responsibilities(desc or "", fallback=(descr[:3000] if descr else None))
         bens  = pick_benefits(descr)
+        exp   = extract_experience(descr)
 
         return {
             "Должность": (title or "Вакансия").strip(),
@@ -1241,16 +1316,17 @@ def map_avito(rows_in: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "Дата публикации": pub,
             "ЗП от (т.р.)": sal_from,
             "ЗП до (т.р.)": sal_to,
-            "Средний совокупный доход при графике 2/2 по 12 часов": shift_sum if shift_sum is not None else (hour*12.0 if hour else None),
+            "Средний совокупный доход при графике 2/2 по 12 часов": shift12_out,
             "В час": hour,
-            "Длительность \nсмены": 12 if (hour or shift_sum) else None,
-            "Требуемый\nопыт": None,
-            "Труд-во": None,
+            "Длительность \nсмены": shift_len,
+            "Требуемый\nопыт": exp,
+            "Труд-во": employ,
             "График": graph,
             "Частота \nвыплат": pay,
             "Льготы": bens,
             "Обязаности": duties,
             "Ссылка": u,
+            "__text": f"{descr} {duties or ''}".strip() or None,
         }
 
     with ThreadPoolExecutor(max_workers=min(_WORKERS, 3)) as ex:
