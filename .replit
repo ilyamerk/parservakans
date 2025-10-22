@@ -2,3 +2,6 @@ modules = ["python-3.11"]
 
 [nix]
 packages = ["gitFull", "glibcLocales", "playwright-driver", "xcodebuild", "zlib"]
+
+[agent]
+expertMode = true
