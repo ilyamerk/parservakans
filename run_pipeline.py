@@ -26,7 +26,7 @@ def main():
     # argv: ['run_pipeline.py', ...]
     out, args_wo_output, query_text, city_text = parse_args(sys.argv[1:])
 
-    tmp_csv = Path("parsers/raw.csv")
+    tmp_csv = Path("exports/raw.csv")
     tmp_csv.parent.mkdir(parents=True, exist_ok=True)
 
     # Шаг 1: сбор в CSV из всех источников
@@ -44,7 +44,7 @@ def main():
     print(f"OK: {out}")
 
     # Шаг 3: DOCX-отчёт
-    report_dir = Path(r"C:\Users\Merkulov.I\Documents\Парсер вакансий\Reports")
+    report_dir = Path("Reports")
     report_dir.mkdir(parents=True, exist_ok=True)
     report_docx = report_dir / ("Отчёт_" + Path(out).stem + ".docx")
     subprocess.run(
