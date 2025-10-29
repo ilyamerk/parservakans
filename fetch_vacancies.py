@@ -658,6 +658,56 @@ def extract_comp(text: str) -> Tuple[Optional[float], Optional[float]]:
         hour = shift / 12.0
     return (round(hour,2) if hour else None, round(shift,2) if shift else None)
 
+
+DEFAULT_SHIFT_HOURS = 12.0
+SHIFTS_PER_MONTH_2X2 = 15.0
+_MONTHLY_THRESHOLD_TR = 15.0  # >=15 т.р. считаем месячной ставкой
+
+
+def _avg_salary_thousand(*values: Optional[float]) -> Optional[float]:
+    vals = []
+    for raw in values:
+        if raw is None:
+            continue
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if val <= 0:
+            continue
+        vals.append(val)
+    if not vals:
+        return None
+    return sum(vals) / len(vals)
+
+
+def derive_hour_shift_from_salary(
+    sal_from_tr: Optional[float],
+    sal_to_tr: Optional[float],
+    shift_hours: Optional[float],
+) -> Tuple[Optional[float], Optional[float], float]:
+    """Оценить часовую ставку и оплату смены по ЗП."""
+
+    eff_hours = shift_hours if isinstance(shift_hours, (int, float)) and shift_hours > 0 else DEFAULT_SHIFT_HOURS
+    avg_thousand = _avg_salary_thousand(sal_from_tr, sal_to_tr)
+    if avg_thousand is None:
+        return None, None, eff_hours
+
+    avg_rub = avg_thousand * 1000.0
+    denom = eff_hours
+    if avg_thousand >= _MONTHLY_THRESHOLD_TR:
+        denom *= SHIFTS_PER_MONTH_2X2
+    if denom <= 0:
+        return None, None, eff_hours
+
+    hour = avg_rub / denom
+    if hour <= 0:
+        return None, None, eff_hours
+
+    hour = round(hour, 2)
+    shift_val = round(hour * eff_hours, 2)
+    return hour, shift_val, eff_hours
+
 NUM_WORD = {"сутки":1,"день":1,"один":1,"одна":1,"два":2,"две":2,"три":3,"четыре":4,"пять":5,"шесть":6,"семь":7}
 SCHED_NUM_RE = re.compile(r"\b([1-9]\d?)\s*[/\-–xх×]\s*([1-9]\d?)\b", re.I)
 def _words_pair(t: str) -> Optional[str]:
@@ -895,6 +945,8 @@ def map_hh(items: List[Dict[str, Any]], pause_detail: float = 0.2) -> List[Dict[
         salary = v.get("salary") or {}
         cur = salary.get("currency") or "RUR"
         to_tr = lambda x: round(x / 1000.0, 1) if (x is not None and x > 0 and cur == "RUR") else None
+        sal_from_tr = to_tr(salary.get("from"))
+        sal_to_tr   = to_tr(salary.get("to"))
         exp = (v.get("experience") or {}).get("name")
         empl_src = (v.get("employment") or {}).get("name")
         sched_src = (v.get("schedule") or {}).get("name")
@@ -923,6 +975,16 @@ def map_hh(items: List[Dict[str, Any]], pause_detail: float = 0.2) -> List[Dict[
                 shift_len = float(hours_html)
                 if hour and not shift:
                     shift = hour * float(shift_len)
+        shift_hours_val = shift_len if isinstance(shift_len, (int, float)) else None
+        if hour is None:
+            salary_hour, salary_shift, eff_hours = derive_hour_shift_from_salary(sal_from_tr, sal_to_tr, shift_hours_val)
+            if salary_hour is not None:
+                hour = salary_hour
+                if shift is None and salary_shift is not None:
+                    shift = salary_shift
+                if shift_len is None:
+                    shift_len = eff_hours
+
         shift12_out = shift if (isinstance(shift_len, (int, float)) and float(shift_len) == 12.0) else (hour * 12.0 if hour else None)
         pay    = extract_pay_frequency(descr_txt)
         employ = extract_employment_type(descr_txt, employment_name=empl_src)
@@ -932,8 +994,8 @@ def map_hh(items: List[Dict[str, Any]], pause_detail: float = 0.2) -> List[Dict[
             "Должность": name,
             "Работодатель": employer,
             "Дата публикации": published,
-            "ЗП от (т.р.)": to_tr(salary.get("from")),
-            "ЗП до (т.р.)": to_tr(salary.get("to")),
+            "ЗП от (т.р.)": sal_from_tr,
+            "ЗП до (т.р.)": sal_to_tr,
             "Средний совокупный доход при графике 2/2 по 12 часов": shift12_out,
             "В час": hour,
             "Длительность \nсмены": shift_len,
@@ -1082,6 +1144,15 @@ def map_gr(rows_in):
                 shift_sum = hour * float(shift_len)
         else:
             shift_len = 12.0 if (hour or shift_sum) else None
+        shift_hours_val = shift_len if isinstance(shift_len, (int, float)) else None
+        if hour is None:
+            salary_hour, salary_shift, eff_hours = derive_hour_shift_from_salary(sal_from, sal_to, shift_hours_val)
+            if salary_hour is not None:
+                hour = salary_hour
+                if shift_sum is None and salary_shift is not None:
+                    shift_sum = salary_shift
+                if shift_len is None:
+                    shift_len = eff_hours
         shift12_out = shift_sum if (isinstance(shift_len, (int, float)) and float(shift_len) == 12.0) else (hour * 12.0 if hour else None)
 
         graph = extract_schedule_strict(descr, sched_src=None)
@@ -1301,6 +1372,15 @@ def map_avito(rows_in: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 shift_sum = hour * float(shift_len)
         else:
             shift_len = 12.0 if (hour or shift_sum) else None
+        shift_hours_val = shift_len if isinstance(shift_len, (int, float)) else None
+        if hour is None:
+            salary_hour, salary_shift, eff_hours = derive_hour_shift_from_salary(sal_from, sal_to, shift_hours_val)
+            if salary_hour is not None:
+                hour = salary_hour
+                if shift_sum is None and salary_shift is not None:
+                    shift_sum = salary_shift
+                if shift_len is None:
+                    shift_len = eff_hours
         shift12_out = shift_sum if (isinstance(shift_len, (int, float)) and float(shift_len) == 12.0) else (hour * 12.0 if hour else None)
 
         graph = extract_schedule_strict(descr, sched_src=None)
