@@ -246,7 +246,7 @@ def write_excel(df: pd.DataFrame, path: Path, rates: list[dict] | None = None):
             ws.set_column(idx, idx, min(max_len + 2, 60))
 
         if rates:
-            sheet_name = "Ставки (час/смена)"
+            sheet_name = unique_sheet_name(xl, RATES_SHEET_BASE)
             rate_rows: list[dict[str, str]] = []
             for item in rates:
                 if not isinstance(item, dict):
