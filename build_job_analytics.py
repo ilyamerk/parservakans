@@ -1,5 +1,6 @@
 import argparse
 from pathlib import Path
+import json
 import re
 import math
 import pandas as pd
@@ -8,6 +9,34 @@ import urllib.parse as _up
 
 LINK_DIR = Path("Exports/_links")
 LINK_DIR.mkdir(parents=True, exist_ok=True)
+
+RATES_SHEET_BASE = "Ставки (час–смена)"
+
+INVALID_SHEET_CHARS_RE = re.compile(r"[\\/\*\?\:\[\]']")
+
+
+def sanitize_sheet_name(name: str, fallback: str = "Лист") -> str:
+    s = (name or "").strip()
+    s = INVALID_SHEET_CHARS_RE.sub("–", s)
+    s = s.strip("'").strip()
+    if not s:
+        s = fallback
+    if len(s) > 31:
+        s = s[:31]
+    return s
+
+
+def unique_sheet_name(writer, desired: str) -> str:
+    base = sanitize_sheet_name(desired)
+    sheets = set(getattr(writer, "sheets", {}).keys())
+    if base not in sheets:
+        return base
+    for i in range(2, 100):
+        suffix = f" ({i})"
+        trimmed = base[: max(0, 31 - len(suffix))] + suffix
+        if trimmed not in sheets:
+            return trimmed
+    return sanitize_sheet_name(f"{base} ({len(sheets) + 1})")
 
 def make_url_shortcut(url: str) -> Path:
     """Создаёт .url-ярлык и возвращает путь к нему."""
@@ -132,7 +161,7 @@ def compute_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
 
 
-def write_excel(df: pd.DataFrame, path: Path):
+def write_excel(df: pd.DataFrame, path: Path, rates: list[dict] | None = None):
     # 1) Нормализуем колонку со ссылками заранее (если есть)
     if "Ссылка" in df.columns:
         try:
@@ -150,7 +179,7 @@ def write_excel(df: pd.DataFrame, path: Path):
         engine="xlsxwriter",
         engine_kwargs={"options": {"strings_to_urls": False}},
     ) as xl:
-        sheet = "Данные"
+        sheet = unique_sheet_name(xl, "Данные")
         df.to_excel(xl, sheet_name=sheet, index=False)
         ws = xl.sheets[sheet]
 
@@ -187,6 +216,7 @@ def write_excel(df: pd.DataFrame, path: Path):
         # 4) Применим числовые форматы к ключевым колонкам (если есть)
         num2_cols = [
             "В час",
+            "Ставка (расчётная) в час, ₽",
             "Средний совокупный доход при графике 2/2 по 12 часов",
             "ЗП от (т.р.)",
             "ЗП до (т.р.)",
@@ -215,6 +245,47 @@ def write_excel(df: pd.DataFrame, path: Path):
                 max_len = len(str(col))
             ws.set_column(idx, idx, min(max_len + 2, 60))
 
+        if rates:
+            sheet_name = unique_sheet_name(xl, RATES_SHEET_BASE)
+            rate_rows: list[dict[str, str]] = []
+            for item in rates:
+                if not isinstance(item, dict):
+                    continue
+                value = str(item.get("value") or "").strip()
+                raw = str(item.get("raw") or "").strip()
+                display = value or raw
+                url_val = str(item.get("url") or "").strip()
+                if not display and not url_val:
+                    continue
+                rate_rows.append({
+                    "Ставка за смену": display,
+                    "Ссылка": url_val,
+                })
+
+            if rate_rows:
+                df_rates = pd.DataFrame(rate_rows, columns=["Ставка за смену", "Ссылка"])
+                df_rates.to_excel(xl, sheet_name=sheet_name, index=False)
+                ws_rates = xl.sheets[sheet_name]
+                try:
+                    ws_rates.freeze_panes(1, 0)
+                except Exception:
+                    pass
+                try:
+                    col_idx = 1
+                    for ridx, link in enumerate(df_rates["Ссылка"].astype(str), start=1):
+                        u = (link or "").strip()
+                        if u.startswith("http"):
+                            ws_rates.write_url(ridx, col_idx, u, fmt_link, u)
+                        else:
+                            ws_rates.write(ridx, col_idx, u)
+                except Exception:
+                    pass
+                try:
+                    ws_rates.set_column(0, 0, 26)
+                    ws_rates.set_column(1, 1, 60)
+                except Exception:
+                    pass
+
 
 
 def main():
@@ -229,7 +300,21 @@ def main():
     df = normalize_columns(df)
     df = coerce_numbers(df)
     df = compute_metrics(df)
-    write_excel(df, dst)
+
+    rates_path = Path(str(src) + ".rates.json")
+    rates_data: list[dict] | None = None
+    if rates_path.exists():
+        try:
+            with open(rates_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict) and isinstance(data.get("items"), list):
+                rates_data = [item for item in data.get("items", []) if isinstance(item, dict)]
+            elif isinstance(data, list):
+                rates_data = [item for item in data if isinstance(item, dict)]
+        except Exception:
+            rates_data = None
+
+    write_excel(df, dst, rates=rates_data)
     print(f"Готово: {dst} ({len(df)} строк)")
 
 if __name__ == "__main__":
