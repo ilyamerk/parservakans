@@ -7,6 +7,7 @@ import re, json, time
 from pathlib import Path
 from typing import List, Dict, Any
 import requests, json, re
+import math
 from concurrent.futures import ThreadPoolExecutor, as_completed  # можно и локально внутри функции
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -500,7 +501,7 @@ def _slugify(s: str) -> str:
 TEMPLATE_COLS = [
     "Должность","Работодатель","Дата публикации",
     "ЗП от (т.р.)","ЗП до (т.р.)",
-    "Средний совокупный доход при графике 2/2 по 12 часов","В час","Длительность \nсмены",
+    "Средний совокупный доход при графике 2/2 по 12 часов","В час","Ставка (расчётная) в час, ₽","Длительность \nсмены",
     "Требуемый\nопыт","Труд-во","График","Частота \nвыплат","Льготы","Обязаности","Ссылка","Примечание"
 ]
 
