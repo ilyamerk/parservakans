@@ -555,29 +555,18 @@ _HOURLY_MARKERS = [
 ]
 
 _SHIFT_MARKERS = [
-    "за смену",
-    "/смена",
-    "/смен",
-    "₽/смена",
-    "руб/смена",
-    "руб./смена",
-    "сменная ставка",
-    "per shift",
-    "per-shift",
-    "shift pay",
+    r"\bза\s*смену\b",
+    r"/\s*смен",
+    r"₽\s*/\s*смен",
+    r"руб\.?\s*/\s*смен",
+    r"\bсменн\w*\s*ставка\b",
+    r"\bсмена\b[^.,;\n\r]{0,12}[–—-]",
+    r"\bper[-\s]?shift\b",
+    r"\bshift\s*pay\b",
 ]
-
-_NEGATIVE_SHIFT_HINTS = ["оклад", "месяц", "в день"]
-
-_SHIFT_PATTERNS_RAW = [
-    r"(?:€|\$|₽|руб\.?|rur)\s*(\d[\d\s]{0,12}(?:[.,]\d{1,2})?)\s*(?:–|-|до\s*)?(\d[\d\s]{0,12}(?:[.,]\d{1,2})?)?\s*(?:/|\s*)(?:смен[аи]|per\s*shift|per-shift|shift\s*pay)",
-    r"(?:от\s*)?(\d[\d\s]{0,12}(?:[.,]\d{1,2})?)\s*(?:–|-|до\s*)?(\d[\d\s]{0,12}(?:[.,]\d{1,2})?)?\s*(?:₽|руб\.?|rur|€|\$)?\s*(?:/|\s*)(?:смен[аи]|per\s*shift|per-shift|shift\s*pay)",
-]
-
-_SHIFT_GENERIC_RE = re.compile(r"смен[^\n\r]{0,40}(?:\d|₽|руб|rur|\$|€)", re.IGNORECASE)
 
 _HOURLY_MARKER_RES = [re.compile(m, re.IGNORECASE) for m in _HOURLY_MARKERS]
-_SHIFT_PATTERNS = [re.compile(p, re.IGNORECASE) for p in _SHIFT_PATTERNS_RAW]
+_SHIFT_MARKER_RES = [re.compile(m, re.IGNORECASE) for m in _SHIFT_MARKERS]
 
 
 def _norm_for_match(text: str) -> str:
@@ -596,77 +585,7 @@ def is_shift_rate(text: str) -> bool:
     norm = _norm_for_match(text)
     if not norm:
         return False
-    if any(hint in norm for hint in _NEGATIVE_SHIFT_HINTS) and "смен" not in norm:
-        return False
-    if any(marker in norm for marker in _SHIFT_MARKERS):
-        return True
-    if "смен" in norm and _SHIFT_GENERIC_RE.search(norm):
-        return True
-    return False
-
-
-_CURRENCY_SYMBOLS = {
-    "RUB": "₽",
-    "USD": "$",
-    "EUR": "€",
-    "UAH": "₴",
-    "KZT": "₸",
-    "BYN": "Br",
-    "GBP": "£",
-}
-
-
-def _currency_symbol_from_code(code: Optional[str], fallback: Optional[str] = None) -> Optional[str]:
-    if not code:
-        return fallback
-    return _CURRENCY_SYMBOLS.get(code.upper(), fallback)
-
-
-def extract_shift_rate(text: str) -> dict | None:
-    segment = _normalize_rate_text(text)
-    if not segment:
-        return None
-    candidates: list[str] = []
-    for pattern in _SHIFT_PATTERNS:
-        for match in pattern.finditer(segment):
-            raw_value = match.group(0).strip()
-            if raw_value and raw_value not in candidates:
-                candidates.append(raw_value)
-    if not candidates:
-        fragment = _find_shift_fragment(segment)
-        if fragment:
-            candidates.append(fragment)
-    for raw_value in candidates:
-        info = extract_rate(raw_value)
-        if not info:
-            continue
-        currency_match = _CURRENCY_TOKEN_RE.search(raw_value)
-        currency_token = currency_match.group(0) if currency_match else None
-        currency_code = info.get("currency") or _currency_code(currency_token)
-        if currency_code is None and "смен" in raw_value.lower():
-            currency_code = "RUB"
-        symbol = _currency_symbol_from_code(currency_code, fallback=currency_token.strip() if currency_token else None)
-        value_display = str(info.get("value") or "").strip()
-        if currency_code == "RUB" and symbol and "₽" not in value_display:
-            value_display = f"{value_display} {symbol}".strip()
-        elif currency_code in {"USD", "EUR", "GBP"} and symbol and not value_display.startswith(symbol):
-            value_display = f"{symbol}{value_display}"
-        elif symbol and currency_code not in {"USD", "EUR", "GBP"} and symbol not in value_display:
-            value_display = f"{value_display} {symbol}".strip()
-        info["value"] = value_display or raw_value
-        info["currency"] = currency_code
-        info["raw"] = raw_value
-        return info
-    if candidates:
-        raw_value = candidates[0]
-        return {
-            "value": raw_value,
-            "min": None,
-            "max": None,
-            "currency": None,
-            "raw": raw_value,
-        }
-    return None
+    return any(p.search(norm) for p in _SHIFT_MARKER_RES)
 
 
 _RATE_NUMBER_RE = re.compile(r"\d[\d\s]*(?:[\.,]\d+)?")
@@ -850,44 +769,56 @@ def _rate_text_blob(*parts) -> str:
     return " ".join(out)
 
 
-def _find_shift_fragment(text: str) -> str:
+def _extract_rate_segments(text: str, patterns: list[re.Pattern[str]]) -> list[str]:
     cleaned = _normalize_rate_text(text)
     if not cleaned:
-        return ""
+        return []
     lowered = cleaned.lower()
-    for marker in _SHIFT_MARKERS:
-        idx = lowered.find(marker)
-        if idx != -1:
-            left = idx
+    segments: list[str] = []
+    for pat in patterns:
+        for match in pat.finditer(lowered):
+            start, end = match.span()
+            left = start
             while left > 0 and cleaned[left - 1] not in ".,;!\n\r":
                 left -= 1
-            right = idx + len(marker)
+            right = end
             while right < len(cleaned) and cleaned[right] not in ".,;!\n\r":
                 right += 1
-            fragment = cleaned[left:right].strip()
-            if fragment:
-                return fragment
-    idx = lowered.find("смен")
-    while idx != -1:
-        left = idx
-        while left > 0 and cleaned[left - 1] not in ".,;!\n\r":
-            left -= 1
-        right = idx
-        while right < len(cleaned) and cleaned[right] not in ".,;!\n\r":
-            right += 1
-        fragment = cleaned[left:right].strip()
-        if fragment:
-            return fragment
-        idx = lowered.find("смен", idx + 4)
-    return ""
+            segment = cleaned[left:right].strip()
+            if not segment:
+                continue
+            rel_start = start - left
+            rel_end = end - left
+            seg_lower = segment.lower()
+            separators = [" или ", " либо ", " / "]
+            before_idx = -1
+            before_sep_len = 0
+            for sep in separators:
+                pos = seg_lower.rfind(sep, 0, rel_start)
+                if pos > before_idx:
+                    before_idx = pos
+                    before_sep_len = len(sep)
+            if before_idx != -1:
+                segment = segment[before_idx + before_sep_len:]
+                seg_lower = segment.lower()
+                rel_end -= before_idx + before_sep_len
+            after_pos = len(segment)
+            for sep in separators:
+                pos = seg_lower.find(sep, rel_end)
+                if pos != -1:
+                    after_pos = min(after_pos, pos)
+            segment = segment[:after_pos].strip()
+            if segment and segment not in segments:
+                segments.append(segment)
+    return segments
 
 
-def collect_shift_rate_rows(rows: list[dict]) -> list[dict]:
+def collect_rate_rows(rows: list[dict]) -> list[dict]:
     collected: list[dict] = []
-    seen_urls: set[str] = set()
+    seen: set[tuple[str, str]] = set()
     for row in rows or []:
         url = (row.get("Ссылка") or row.get("url") or "").strip()
-        if not url or url in seen_urls:
+        if not url:
             continue
         text_blob = _rate_text_blob(
             row.get("__rate_text"),
@@ -900,277 +831,45 @@ def collect_shift_rate_rows(rows: list[dict]) -> list[dict]:
         )
         if not text_blob:
             continue
-        if not is_shift_rate(text_blob):
-            continue
-        rate_info = extract_shift_rate(text_blob)
-        if rate_info:
-            value = str(rate_info.get("value") or "").strip()
-            raw_value = str(rate_info.get("raw") or "").strip()
-        else:
-            value = ""
-            raw_value = _find_shift_fragment(text_blob)
-        collected.append({
-            "value": value or raw_value,
-            "min": rate_info.get("min") if rate_info else None,
-            "max": rate_info.get("max") if rate_info else None,
-            "currency": rate_info.get("currency") if rate_info else None,
-            "raw": raw_value,
-            "url": url,
-        })
-        seen_urls.add(url)
+        for rate_type, pats in (("hourly", _HOURLY_MARKER_RES), ("shift", _SHIFT_MARKER_RES)):
+            if (url, rate_type) in seen:
+                continue
+            segments = _extract_rate_segments(text_blob, pats)
+            for seg in segments:
+                info = extract_rate(seg)
+                if info and info.get("value"):
+                    info["raw"] = seg
+                    collected.append({
+                        "type": rate_type,
+                        "value": info.get("value"),
+                        "min": info.get("min"),
+                        "max": info.get("max"),
+                        "currency": info.get("currency"),
+                        "raw": info.get("raw"),
+                        "url": url,
+                    })
+                    seen.add((url, rate_type))
+                    break
     return collected
 
 
-HOURS_PER_SHIFT_DEFAULT = 12
-
-SHIFT_MAP_FIXED = {
-    "5/2": 23,
-    "2/2": 15,
-    "3/3": 15,
-    "4/2": 20,
-    "6/1": 26,
-    "2/1": 20,
-    "1/2": 10,
-    "1/3": 8,
-    "7/7": 15,
-    "15/15": 15,
-    "30/30": 15,
-    "12/36": 15,
-    "24/48": 10,
-}
-
-SYNONYMS = {
-    "пятидневка": "5/2",
-    "сутки/двое": "24/48",
-    "сутки через двое": "24/48",
-    "вахта 15/15": "15/15",
-    "вахта 30/30": "30/30",
-}
-
-
-def normalize_text(s: str) -> str:
-    return re.sub(r"\s+", " ", (s or "").lower().replace("\xa0", " ")).strip()
-
-
-_HOUR_CONTEXT_KEYWORDS = (
-    "смен",
-    "рабоч",
-    "график",
-    "длитель",
-    "продолж",
-    "раб. в",
-    "раб.в",
-    "рабочее время",
-    "время работ",
-    "рабочий день",
-    "раб день",
-    "рабочая смен",
-    "кажд",
-    "в смене",
-    "смена дл",
-    "смены дл",
-    "по смен",
-    "по графику",
-)
-
-_HOUR_RANGE_RE = re.compile(r"(\d{1,2})\s*(?:[-–]|до)\s*(\d{1,2})\s*(?:час(?:а|ов)?|ч)\b")
-_HOUR_VALUE_RE = re.compile(r"(\d{1,2})(?:[.,](\d{1,2}))?\s*(?:час(?:а|ов)?|ч)\b")
-_HOUR_COMPOUND_RE = re.compile(r"(\d{1,2})\s*[-–]?\s*час(?:ов|овая|овые|овой|ами|а)\b")
-_TIME_RANGE_RE = re.compile(
-    r"с\s*(\d{1,2})(?::(\d{2}))?\s*до\s*(\d{1,2})(?::(\d{2}))?"
-)
-
-
-def _parse_hour_value(value: str) -> Optional[float]:
-    try:
-        return float(value.replace(",", "."))
-    except Exception:
-        return None
-
-
-def _context_has_keywords(before: str, after: str) -> bool:
-    context = f"{before[-40:]} {after[:40]}"
-    for kw in _HOUR_CONTEXT_KEYWORDS:
-        if kw in context:
-            return True
-    return False
-
-
-def detect_hours_per_shift(text: str, explicit_field: Optional[str]) -> float:
-    candidates: list[float] = []
-    if explicit_field:
-        try:
-            match = re.search(r"\d{1,2}(?:[.,]\d{1,2})?", str(explicit_field))
-            if match:
-                parsed = _parse_hour_value(match.group())
-                if parsed is not None and 4 <= parsed <= 24:
-                    candidates.append(parsed)
-        except Exception:
-            pass
-
-    t = normalize_text(text)
-    if t:
-        for m in _HOUR_RANGE_RE.finditer(t):
-            for idx in (1, 2):
-                parsed = _parse_hour_value(m.group(idx))
-                if parsed is not None and 4 <= parsed <= 24:
-                    candidates.append(parsed)
-        for m in _HOUR_VALUE_RE.finditer(t):
-            parsed = _parse_hour_value(m.group(1) + ("." + m.group(2) if m.group(2) else ""))
-            if parsed is None or not (4 <= parsed <= 24):
-                continue
-            before = t[max(0, m.start() - 40) : m.start()]
-            after = t[m.end() : m.end() + 40]
-            if _context_has_keywords(before, after):
-                candidates.append(parsed)
-        for m in _HOUR_COMPOUND_RE.finditer(t):
-            parsed = _parse_hour_value(m.group(1))
-            if parsed is not None and 4 <= parsed <= 24:
-                before = t[max(0, m.start() - 40) : m.start()]
-                after = t[m.end() : m.end() + 40]
-                if _context_has_keywords(before, after):
-                    candidates.append(parsed)
-        for m in _TIME_RANGE_RE.finditer(t):
-            start_h = int(m.group(1))
-            start_m = int(m.group(2) or 0)
-            end_h = int(m.group(3))
-            end_m = int(m.group(4) or 0)
-            start = start_h + start_m / 60
-            end = end_h + end_m / 60
-            duration = end - start
-            if duration <= 0:
-                duration += 24
-            if 4 <= duration <= 24:
-                candidates.append(round(duration, 1))
-
-    for candidate in candidates:
-        if 4 <= candidate <= 24:
-            return candidate
-    return float(HOURS_PER_SHIFT_DEFAULT)
-
-
-def parse_schedule_to_key(text: str) -> Optional[str]:
-    t = normalize_text(text)
-    if not t:
-        return None
-    for key, value in SYNONYMS.items():
-        if key in t:
-            return value
-    if "день/ночь" in t or "день ночь" in t:
-        return "2/2"
-    m = re.search(r"\b(\d{1,2})\s*/\s*(\d{1,2})\b", t)
-    if m:
-        x, y = int(m.group(1)), int(m.group(2))
-        if 1 <= x <= 30 and 0 <= y <= 72:
-            return f"{x}/{y}"
-    m = re.search(r"\b(\d{1,2})\s*(?:через|-|\/\s*через)\s*(\d{1,2})\b", t)
-    if m:
-        x, y = int(m.group(1)), int(m.group(2))
-        if 1 <= x <= 30 and 0 <= y <= 72:
-            return f"{x}/{y}"
-    return None
-
-
-def estimate_shifts_per_month(schedule_text: str, hours_mode: bool = False, x: int | None = None, y: int | None = None) -> int:
-    if schedule_text in SHIFT_MAP_FIXED:
-        return SHIFT_MAP_FIXED[schedule_text]
-    if x is None or y is None:
-        m = re.match(r"(\d{1,2})/(\d{1,2})$", schedule_text or "")
-        if m:
-            x, y = int(m.group(1)), int(m.group(2))
-    if x is not None and y is not None and (x + y) > 0:
-        if not hours_mode and x <= 24 and y >= 24:
-            hours_mode = True
-        if hours_mode:
-            shifts = round((30.44 * 24) / (x + y))
-        else:
-            shifts = round((30.44 * x) / (x + y))
-        return max(int(shifts), 1)
-    return 15
-
-
-def _value_is_blank(value: Any) -> bool:
-    if value is None:
-        return True
-    if isinstance(value, float):
-        return math.isnan(value)
-    if isinstance(value, (int, bool)):
-        return False
-    text = str(value).strip().lower()
-    return text == "" or text == "nan" or text == "none"
-
-
-def compute_hourly_rate(vac: dict) -> Optional[float]:
-    sal_from_th = vac.get("ЗП от (т.р.)")
-    if sal_from_th in (None, ""):
-        sal_from_th = vac.get("salary_from_thousands")
-    if sal_from_th in (None, ""):
-        return None
-    try:
-        sal_from_th = float(str(sal_from_th).replace(",", "."))
-    except Exception:
-        return None
-    if sal_from_th <= 0:
-        return None
-
-    hours_field = (
-        vac.get("Длительность смены")
-        or vac.get("Смена, часов")
-        or vac.get("Длительность \nсмены")
-    )
-
-    merged_text_parts = [
-        vac.get("Заголовок"),
-        vac.get("Должность"),
-        vac.get("Описание"),
-        vac.get("Обязаности"),
-        vac.get("Условия"),
-        vac.get("График"),
-        vac.get("Режим"),
-        vac.get("Сменность"),
-        vac.get("Льготы"),
-        vac.get("Зарплата"),
-        vac.get("Компенсация"),
-    ]
-    merged_text = " ".join(str(p) for p in merged_text_parts if p)
-    hours_per_shift = detect_hours_per_shift(merged_text, hours_field)
-
-    schedule_field = vac.get("График") or vac.get("Режим") or vac.get("Сменность") or ""
-    schedule_source = f"{schedule_field} {merged_text}".strip()
-    schedule_key = parse_schedule_to_key(schedule_source)
-    if schedule_key:
-        m = re.match(r"(\d{1,2})/(\d{1,2})", schedule_key)
-        x = int(m.group(1)) if m else None
-        y = int(m.group(2)) if m else None
-        hours_mode = False
-        if x is not None and y is not None:
-            hours_mode = x <= 24 and y >= 24
-            if hours_mode and (hours_per_shift == HOURS_PER_SHIFT_DEFAULT or hours_per_shift is None):
-                if 4 <= x <= 24:
-                    hours_per_shift = float(x)
-        shifts_per_month = estimate_shifts_per_month(schedule_key, hours_mode=hours_mode, x=x, y=y)
-    else:
-        shifts_per_month = 15
-
-    if hours_per_shift is None or hours_per_shift <= 0 or shifts_per_month <= 0:
-        return None
-
-    hourly = (sal_from_th * 1000.0) / (float(hours_per_shift) * shifts_per_month)
-    return round(hourly, 1)
-
-
-def apply_computed_hourly_rates(rows: list[dict]) -> None:
-    for vac in rows or []:
-        if not isinstance(vac, dict):
+def filter_rows_without_shift_rates(rows: list[dict], rate_rows: list[dict]) -> list[dict]:
+    if not rows:
+        return []
+    shift_urls = {
+        str(item.get("url") or "").strip()
+        for item in rate_rows or []
+        if str(item.get("type") or "").lower() == "shift"
+    }
+    if not shift_urls:
+        return rows
+    filtered: list[dict] = []
+    for row in rows:
+        url = str(row.get("Ссылка") or row.get("url") or "").strip()
+        if url and url in shift_urls:
             continue
-        hourly = compute_hourly_rate(vac)
-        if hourly is None:
-            vac.setdefault("Ставка (расчётная) в час, ₽", None)
-            continue
-        current = vac.get("В час")
-        if _value_is_blank(current):
-            vac["В час"] = hourly
-        vac["Ставка (расчётная) в час, ₽"] = hourly
+        filtered.append(row)
+    return filtered
 
 
 def is_gross_salary(text: str) -> bool:
@@ -2511,9 +2210,9 @@ def main():
     else:
         print("Фильтр по роли отключен (--no_filter).")
 
-    apply_computed_hourly_rates(rows)
-    rate_rows = collect_shift_rate_rows(rows)
-    df = to_df(rows)
+    rate_rows = collect_rate_rows(rows)
+    rows_main = filter_rows_without_shift_rates(rows, rate_rows)
+    df = to_df(rows_main)
 
     # Чистка ссылок перед экспортом (www.www и query)
     if "Ссылка" in df.columns:
