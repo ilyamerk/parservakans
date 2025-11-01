@@ -554,29 +554,18 @@ _HOURLY_MARKERS = [
 ]
 
 _SHIFT_MARKERS = [
-    "за смену",
-    "/смена",
-    "/смен",
-    "₽/смена",
-    "руб/смена",
-    "руб./смена",
-    "сменная ставка",
-    "per shift",
-    "per-shift",
-    "shift pay",
+    r"\bза\s*смену\b",
+    r"/\s*смен",
+    r"₽\s*/\s*смен",
+    r"руб\.?\s*/\s*смен",
+    r"\bсменн\w*\s*ставка\b",
+    r"\bсмена\b[^.,;\n\r]{0,12}[–—-]",
+    r"\bper[-\s]?shift\b",
+    r"\bshift\s*pay\b",
 ]
-
-_NEGATIVE_SHIFT_HINTS = ["оклад", "месяц", "в день"]
-
-_SHIFT_PATTERNS_RAW = [
-    r"(?:€|\$|₽|руб\.?|rur)\s*(\d[\d\s]{0,12}(?:[.,]\d{1,2})?)\s*(?:–|-|до\s*)?(\d[\d\s]{0,12}(?:[.,]\d{1,2})?)?\s*(?:/|\s*)(?:смен[аи]|per\s*shift|per-shift|shift\s*pay)",
-    r"(?:от\s*)?(\d[\d\s]{0,12}(?:[.,]\d{1,2})?)\s*(?:–|-|до\s*)?(\d[\d\s]{0,12}(?:[.,]\d{1,2})?)?\s*(?:₽|руб\.?|rur|€|\$)?\s*(?:/|\s*)(?:смен[аи]|per\s*shift|per-shift|shift\s*pay)",
-]
-
-_SHIFT_GENERIC_RE = re.compile(r"смен[^\n\r]{0,40}(?:\d|₽|руб|rur|\$|€)", re.IGNORECASE)
 
 _HOURLY_MARKER_RES = [re.compile(m, re.IGNORECASE) for m in _HOURLY_MARKERS]
-_SHIFT_PATTERNS = [re.compile(p, re.IGNORECASE) for p in _SHIFT_PATTERNS_RAW]
+_SHIFT_MARKER_RES = [re.compile(m, re.IGNORECASE) for m in _SHIFT_MARKERS]
 
 
 def _norm_for_match(text: str) -> str:
@@ -595,77 +584,7 @@ def is_shift_rate(text: str) -> bool:
     norm = _norm_for_match(text)
     if not norm:
         return False
-    if any(hint in norm for hint in _NEGATIVE_SHIFT_HINTS) and "смен" not in norm:
-        return False
-    if any(marker in norm for marker in _SHIFT_MARKERS):
-        return True
-    if "смен" in norm and _SHIFT_GENERIC_RE.search(norm):
-        return True
-    return False
-
-
-_CURRENCY_SYMBOLS = {
-    "RUB": "₽",
-    "USD": "$",
-    "EUR": "€",
-    "UAH": "₴",
-    "KZT": "₸",
-    "BYN": "Br",
-    "GBP": "£",
-}
-
-
-def _currency_symbol_from_code(code: Optional[str], fallback: Optional[str] = None) -> Optional[str]:
-    if not code:
-        return fallback
-    return _CURRENCY_SYMBOLS.get(code.upper(), fallback)
-
-
-def extract_shift_rate(text: str) -> dict | None:
-    segment = _normalize_rate_text(text)
-    if not segment:
-        return None
-    candidates: list[str] = []
-    for pattern in _SHIFT_PATTERNS:
-        for match in pattern.finditer(segment):
-            raw_value = match.group(0).strip()
-            if raw_value and raw_value not in candidates:
-                candidates.append(raw_value)
-    if not candidates:
-        fragment = _find_shift_fragment(segment)
-        if fragment:
-            candidates.append(fragment)
-    for raw_value in candidates:
-        info = extract_rate(raw_value)
-        if not info:
-            continue
-        currency_match = _CURRENCY_TOKEN_RE.search(raw_value)
-        currency_token = currency_match.group(0) if currency_match else None
-        currency_code = info.get("currency") or _currency_code(currency_token)
-        if currency_code is None and "смен" in raw_value.lower():
-            currency_code = "RUB"
-        symbol = _currency_symbol_from_code(currency_code, fallback=currency_token.strip() if currency_token else None)
-        value_display = str(info.get("value") or "").strip()
-        if currency_code == "RUB" and symbol and "₽" not in value_display:
-            value_display = f"{value_display} {symbol}".strip()
-        elif currency_code in {"USD", "EUR", "GBP"} and symbol and not value_display.startswith(symbol):
-            value_display = f"{symbol}{value_display}"
-        elif symbol and currency_code not in {"USD", "EUR", "GBP"} and symbol not in value_display:
-            value_display = f"{value_display} {symbol}".strip()
-        info["value"] = value_display or raw_value
-        info["currency"] = currency_code
-        info["raw"] = raw_value
-        return info
-    if candidates:
-        raw_value = candidates[0]
-        return {
-            "value": raw_value,
-            "min": None,
-            "max": None,
-            "currency": None,
-            "raw": raw_value,
-        }
-    return None
+    return any(p.search(norm) for p in _SHIFT_MARKER_RES)
 
 
 _RATE_NUMBER_RE = re.compile(r"\d[\d\s]*(?:[\.,]\d+)?")
@@ -849,44 +768,56 @@ def _rate_text_blob(*parts) -> str:
     return " ".join(out)
 
 
-def _find_shift_fragment(text: str) -> str:
+def _extract_rate_segments(text: str, patterns: list[re.Pattern[str]]) -> list[str]:
     cleaned = _normalize_rate_text(text)
     if not cleaned:
-        return ""
+        return []
     lowered = cleaned.lower()
-    for marker in _SHIFT_MARKERS:
-        idx = lowered.find(marker)
-        if idx != -1:
-            left = idx
+    segments: list[str] = []
+    for pat in patterns:
+        for match in pat.finditer(lowered):
+            start, end = match.span()
+            left = start
             while left > 0 and cleaned[left - 1] not in ".,;!\n\r":
                 left -= 1
-            right = idx + len(marker)
+            right = end
             while right < len(cleaned) and cleaned[right] not in ".,;!\n\r":
                 right += 1
-            fragment = cleaned[left:right].strip()
-            if fragment:
-                return fragment
-    idx = lowered.find("смен")
-    while idx != -1:
-        left = idx
-        while left > 0 and cleaned[left - 1] not in ".,;!\n\r":
-            left -= 1
-        right = idx
-        while right < len(cleaned) and cleaned[right] not in ".,;!\n\r":
-            right += 1
-        fragment = cleaned[left:right].strip()
-        if fragment:
-            return fragment
-        idx = lowered.find("смен", idx + 4)
-    return ""
+            segment = cleaned[left:right].strip()
+            if not segment:
+                continue
+            rel_start = start - left
+            rel_end = end - left
+            seg_lower = segment.lower()
+            separators = [" или ", " либо ", " / "]
+            before_idx = -1
+            before_sep_len = 0
+            for sep in separators:
+                pos = seg_lower.rfind(sep, 0, rel_start)
+                if pos > before_idx:
+                    before_idx = pos
+                    before_sep_len = len(sep)
+            if before_idx != -1:
+                segment = segment[before_idx + before_sep_len:]
+                seg_lower = segment.lower()
+                rel_end -= before_idx + before_sep_len
+            after_pos = len(segment)
+            for sep in separators:
+                pos = seg_lower.find(sep, rel_end)
+                if pos != -1:
+                    after_pos = min(after_pos, pos)
+            segment = segment[:after_pos].strip()
+            if segment and segment not in segments:
+                segments.append(segment)
+    return segments
 
 
-def collect_shift_rate_rows(rows: list[dict]) -> list[dict]:
+def collect_rate_rows(rows: list[dict]) -> list[dict]:
     collected: list[dict] = []
-    seen_urls: set[str] = set()
+    seen: set[tuple[str, str]] = set()
     for row in rows or []:
         url = (row.get("Ссылка") or row.get("url") or "").strip()
-        if not url or url in seen_urls:
+        if not url:
             continue
         text_blob = _rate_text_blob(
             row.get("__rate_text"),
@@ -899,25 +830,45 @@ def collect_shift_rate_rows(rows: list[dict]) -> list[dict]:
         )
         if not text_blob:
             continue
-        if not is_shift_rate(text_blob):
-            continue
-        rate_info = extract_shift_rate(text_blob)
-        if rate_info:
-            value = str(rate_info.get("value") or "").strip()
-            raw_value = str(rate_info.get("raw") or "").strip()
-        else:
-            value = ""
-            raw_value = _find_shift_fragment(text_blob)
-        collected.append({
-            "value": value or raw_value,
-            "min": rate_info.get("min") if rate_info else None,
-            "max": rate_info.get("max") if rate_info else None,
-            "currency": rate_info.get("currency") if rate_info else None,
-            "raw": raw_value,
-            "url": url,
-        })
-        seen_urls.add(url)
+        for rate_type, pats in (("hourly", _HOURLY_MARKER_RES), ("shift", _SHIFT_MARKER_RES)):
+            if (url, rate_type) in seen:
+                continue
+            segments = _extract_rate_segments(text_blob, pats)
+            for seg in segments:
+                info = extract_rate(seg)
+                if info and info.get("value"):
+                    info["raw"] = seg
+                    collected.append({
+                        "type": rate_type,
+                        "value": info.get("value"),
+                        "min": info.get("min"),
+                        "max": info.get("max"),
+                        "currency": info.get("currency"),
+                        "raw": info.get("raw"),
+                        "url": url,
+                    })
+                    seen.add((url, rate_type))
+                    break
     return collected
+
+
+def filter_rows_without_shift_rates(rows: list[dict], rate_rows: list[dict]) -> list[dict]:
+    if not rows:
+        return []
+    shift_urls = {
+        str(item.get("url") or "").strip()
+        for item in rate_rows or []
+        if str(item.get("type") or "").lower() == "shift"
+    }
+    if not shift_urls:
+        return rows
+    filtered: list[dict] = []
+    for row in rows:
+        url = str(row.get("Ссылка") or row.get("url") or "").strip()
+        if url and url in shift_urls:
+            continue
+        filtered.append(row)
+    return filtered
 
 
 def is_gross_salary(text: str) -> bool:
@@ -2258,8 +2209,9 @@ def main():
     else:
         print("Фильтр по роли отключен (--no_filter).")
 
-    rate_rows = collect_shift_rate_rows(rows)
-    df = to_df(rows)
+    rate_rows = collect_rate_rows(rows)
+    rows_main = filter_rows_without_shift_rates(rows, rate_rows)
+    df = to_df(rows_main)
 
     # Чистка ссылок перед экспортом (www.www и query)
     if "Ссылка" in df.columns:

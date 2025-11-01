@@ -217,24 +217,24 @@ def write_excel(df: pd.DataFrame, path: Path, rates: list[dict] | None = None):
             ws.set_column(idx, idx, min(max_len + 2, 60))
 
         if rates:
-            sheet_name = "Ставки за смену"
+            sheet_name = "Ставки (час/смена)"
             rate_rows: list[dict[str, str]] = []
             for item in rates:
                 if not isinstance(item, dict):
                     continue
                 value = str(item.get("value") or "").strip()
-                raw = str(item.get("raw") or "").strip()
-                display = value or raw
-                url_val = str(item.get("url") or "").strip()
-                if not display and not url_val:
+                if not value:
                     continue
+                rate_type = str(item.get("type") or "").lower()
+                url_val = str(item.get("url") or "").strip()
                 rate_rows.append({
-                    "Ставка за смену": display,
+                    "Ставка в час": value if rate_type == "hourly" else "",
+                    "Ставка за смену": value if rate_type == "shift" else "",
                     "Ссылка": url_val,
                 })
 
             if rate_rows:
-                df_rates = pd.DataFrame(rate_rows, columns=["Ставка за смену", "Ссылка"])
+                df_rates = pd.DataFrame(rate_rows, columns=["Ставка в час", "Ставка за смену", "Ссылка"])
                 df_rates.to_excel(xl, sheet_name=sheet_name, index=False)
                 ws_rates = xl.sheets[sheet_name]
                 try:
@@ -242,7 +242,7 @@ def write_excel(df: pd.DataFrame, path: Path, rates: list[dict] | None = None):
                 except Exception:
                     pass
                 try:
-                    col_idx = 1
+                    col_idx = 2
                     for ridx, link in enumerate(df_rates["Ссылка"].astype(str), start=1):
                         u = (link or "").strip()
                         if u.startswith("http"):
@@ -252,8 +252,8 @@ def write_excel(df: pd.DataFrame, path: Path, rates: list[dict] | None = None):
                 except Exception:
                     pass
                 try:
-                    ws_rates.set_column(0, 0, 26)
-                    ws_rates.set_column(1, 1, 60)
+                    ws_rates.set_column(0, 1, 26)
+                    ws_rates.set_column(2, 2, 60)
                 except Exception:
                     pass
 

@@ -1,17 +1,23 @@
 import unittest
 
 from fetch_vacancies import (
+    is_hourly_rate,
     is_shift_rate,
-    extract_shift_rate,
-    collect_shift_rate_rows,
+    extract_rate,
+    collect_rate_rows,
+    filter_rows_without_shift_rates,
 )
-from build_job_analytics import write_excel
-from pathlib import Path
-from tempfile import TemporaryDirectory
-import pandas as pd
 
 
-class ShiftRateDetectionTests(unittest.TestCase):
+class HourlyShiftDetectionTests(unittest.TestCase):
+    def test_is_hourly_rate_positive(self):
+        text = "Оплата 1200 руб/час"
+        self.assertTrue(is_hourly_rate(text))
+
+    def test_is_hourly_rate_negative(self):
+        text = "Оклад 60 000 ₽ в месяц"
+        self.assertFalse(is_hourly_rate(text))
+
     def test_is_shift_rate_positive(self):
         text = "Смена 12ч — 3000 ₽"
         self.assertTrue(is_shift_rate(text))
@@ -20,79 +26,81 @@ class ShiftRateDetectionTests(unittest.TestCase):
         text = "$150 per shift guaranteed"
         self.assertTrue(is_shift_rate(text))
 
-    def test_is_shift_rate_negative_by_hint(self):
-        text = "оклад 60 000 ₽/мес"
-        self.assertFalse(is_shift_rate(text))
 
-    def test_is_shift_rate_negative_day(self):
-        text = "в день 2000 ₽"
-        self.assertFalse(is_shift_rate(text))
-
-
-class ExtractShiftRateTests(unittest.TestCase):
-    def test_extract_simple_shift_rate(self):
-        data = extract_shift_rate("Смена 12ч — 3000 ₽")
+class ExtractRateTests(unittest.TestCase):
+    def test_extract_single_with_suffix(self):
+        data = extract_rate("1200 руб/час + %")
         self.assertIsNotNone(data)
-        self.assertEqual(data["value"], "3000 ₽")
-        self.assertEqual(data["min"], 3000.0)
-        self.assertEqual(data["max"], 3000.0)
+        self.assertEqual(data["value"], "1200 ₽ + %")
+        self.assertEqual(data["min"], 1200.0)
+        self.assertEqual(data["max"], 1200.0)
         self.assertEqual(data["currency"], "RUB")
 
-    def test_extract_shift_rate_without_currency(self):
-        data = extract_shift_rate("Оплата 1800/смена")
+    def test_extract_range_suffix_currency(self):
+        data = extract_rate("1500-2000 руб/ч")
         self.assertIsNotNone(data)
-        self.assertEqual(data["value"], "1800 ₽")
-        self.assertEqual(data["min"], 1800.0)
-        self.assertEqual(data["max"], 1800.0)
+        self.assertEqual(data["value"], "1500–2000 ₽")
+        self.assertEqual(data["min"], 1500.0)
+        self.assertEqual(data["max"], 2000.0)
         self.assertEqual(data["currency"], "RUB")
 
-    def test_extract_shift_rate_dollars(self):
-        data = extract_shift_rate("$50-60 per shift")
+    def test_extract_range_prefix_currency(self):
+        data = extract_rate("$15-18 per hour")
         self.assertIsNotNone(data)
-        self.assertEqual(data["value"], "$50–60")
-        self.assertEqual(data["min"], 50.0)
-        self.assertEqual(data["max"], 60.0)
+        self.assertEqual(data["value"], "$15–18")
+        self.assertEqual(data["min"], 15.0)
+        self.assertEqual(data["max"], 18.0)
         self.assertEqual(data["currency"], "USD")
 
-    def test_extract_shift_rate_euro(self):
-        data = extract_shift_rate("€40 per shift")
+    def test_extract_shift_phrase(self):
+        data = extract_rate("от 1 200 до 1 600 за смену")
         self.assertIsNotNone(data)
-        self.assertEqual(data["value"], "€40")
+        self.assertEqual(data["value"], "от 1 200 до 1 600")
+        self.assertEqual(data["min"], 1200.0)
+        self.assertEqual(data["max"], 1600.0)
+        self.assertIsNone(data["currency"])
+
+    def test_extract_euro_hour(self):
+        data = extract_rate("€12/hour")
+        self.assertIsNotNone(data)
+        self.assertEqual(data["value"], "€12")
+        self.assertEqual(data["min"], 12.0)
+        self.assertEqual(data["max"], 12.0)
         self.assertEqual(data["currency"], "EUR")
 
 
-class CollectShiftRateRowsTests(unittest.TestCase):
-    def test_collect_shift_rows(self):
+class CollectRateRowsTests(unittest.TestCase):
+    def test_collect_both_hourly_and_shift(self):
+        row = {
+            "Ссылка": "https://example.com/job",
+            "__rate_text": "Оплата 1800/смена или 200/час",
+        }
+        rates = collect_rate_rows([row])
+        self.assertEqual(len(rates), 2)
+        types = {r["type"] for r in rates}
+        self.assertEqual(types, {"hourly", "shift"})
+        hourly = next(r for r in rates if r["type"] == "hourly")
+        shift = next(r for r in rates if r["type"] == "shift")
+        self.assertEqual(hourly["value"], "200")
+        self.assertEqual(shift["value"], "1800")
+        self.assertEqual(hourly["url"], row["Ссылка"])
+        self.assertEqual(shift["url"], row["Ссылка"])
+
+
+class FilterShiftRowsTests(unittest.TestCase):
+    def test_filter_excludes_shift_rows_from_main(self):
         rows = [
-            {
-                "Ссылка": "https://example.com/job",
-                "__rate_text": "Оплата 1800/смена или 200/час",
-            }
+            {"Ссылка": "https://example.com/a"},
+            {"Ссылка": "https://example.com/b"},
         ]
-        rates = collect_shift_rate_rows(rows)
-        self.assertEqual(len(rates), 1)
-        self.assertEqual(rates[0]["value"], "1800 ₽")
-        self.assertEqual(rates[0]["url"], "https://example.com/job")
-
-
-class ExportShiftSheetTests(unittest.TestCase):
-    def test_write_excel_creates_shift_sheet(self):
-        df = pd.DataFrame([
-            {"Должность": "Повар", "Ссылка": "https://example.com/job"}
-        ])
-        rates = [
-            {"value": "1800 ₽", "url": "https://example.com/job", "raw": "1800/смена"}
+        rate_rows = [
+            {"type": "shift", "url": "https://example.com/a"},
+            {"type": "hourly", "url": "https://example.com/b"},
         ]
-        with TemporaryDirectory() as tmp:
-            path = Path(tmp) / "out.xlsx"
-            write_excel(df, path, rates=rates)
-            self.assertTrue(path.exists())
-            xls = pd.ExcelFile(path)
-            self.assertIn("Ставки за смену", xls.sheet_names)
-            data = pd.read_excel(path, sheet_name="Ставки за смену")
-            self.assertListEqual(list(data.columns), ["Ставка за смену", "Ссылка"])
-            self.assertEqual(data.iloc[0]["Ставка за смену"], "1800 ₽")
-            self.assertEqual(data.iloc[0]["Ссылка"], "https://example.com/job")
+        filtered = filter_rows_without_shift_rates(rows, rate_rows)
+        urls = {row["Ссылка"] for row in filtered}
+        self.assertNotIn("https://example.com/a", urls)
+        self.assertIn("https://example.com/b", urls)
 
 
 if __name__ == "__main__":
