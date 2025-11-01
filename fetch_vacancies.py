@@ -501,8 +501,80 @@ TEMPLATE_COLS = [
     "Должность","Работодатель","Дата публикации",
     "ЗП от (т.р.)","ЗП до (т.р.)",
     "Средний совокупный доход при графике 2/2 по 12 часов","В час","Длительность \nсмены",
-    "Требуемый\nопыт","Труд-во","График","Частота \nвыплат","Льготы","Обязаности","Ссылка"
+    "Требуемый\nопыт","Труд-во","График","Частота \nвыплат","Льготы","Обязаности","Ссылка","Примечание"
 ]
+
+GROSS_NOTE_TEXT = "До вычета налога"
+
+_GROSS_POS_PATTERNS = [
+    re.compile(r"до\s*вычета(?:\s*налога)?", re.IGNORECASE),
+    re.compile(r"до\s*вычета\s*ндфл", re.IGNORECASE),
+    re.compile(r"до\s*удержания(?:\s*ндфл)?", re.IGNORECASE),
+    re.compile(r"до\s*уплаты\s*налогов", re.IGNORECASE),
+    re.compile(r"\bgross\b", re.IGNORECASE),
+    re.compile(r"\bбрутто\b", re.IGNORECASE),
+]
+
+_GROSS_NEG_PATTERNS = [
+    re.compile(r"на\s*руки", re.IGNORECASE),
+    re.compile(r"после\s*вычета", re.IGNORECASE),
+    re.compile(r"\bnet\b", re.IGNORECASE),
+    re.compile(r"\bчистыми\b", re.IGNORECASE),
+]
+
+_NBSP_RE = re.compile(r"\u00a0", re.UNICODE)
+
+
+def _collect_text_chunks(value) -> list[str]:
+    texts: list[str] = []
+    if isinstance(value, str):
+        val = value.strip()
+        if val:
+            texts.append(val)
+    elif isinstance(value, dict):
+        for key, val in value.items():
+            if key == "gross":
+                if val is True:
+                    texts.append("gross")
+                elif val is False:
+                    texts.append("net")
+                continue
+            texts.extend(_collect_text_chunks(val))
+    elif isinstance(value, (list, tuple, set)):
+        for item in value:
+            texts.extend(_collect_text_chunks(item))
+    return texts
+
+
+def _gross_text_blob(*parts) -> str:
+    out: list[str] = []
+    for part in parts:
+        out.extend(_collect_text_chunks(part))
+    return " ".join(out)
+
+
+def is_gross_salary(text: str) -> bool:
+    """Return True if the text contains markers that salary is gross."""
+    if not text:
+        return False
+    norm = text.lower()
+    norm = _NBSP_RE.sub(" ", norm)
+    norm = re.sub(r"\s+", " ", norm)
+    norm = norm.strip()
+    if not norm:
+        return False
+    collapsed = re.sub(r"\s+", "", norm)
+    for neg in _GROSS_NEG_PATTERNS:
+        if neg.search(norm) or neg.search(collapsed):
+            return False
+    for pos in _GROSS_POS_PATTERNS:
+        if pos.search(norm) or pos.search(collapsed):
+            return True
+    # дополнительная проверка на маркеры без пробелов
+    for marker in ("довычета", "довычетаналога", "додержания", "додержанияндфл", "доуплатыналогов"):
+        if marker in collapsed:
+            return True
+    return False
 
 # ================= РОЛЕВЫЕ ФИЛЬТРЫ ПО НАЗВАНИЮ =================
 FILTERS = {
@@ -990,6 +1062,19 @@ def map_hh(items: List[Dict[str, Any]], pause_detail: float = 0.2) -> List[Dict[
         employ = extract_employment_type(descr_txt, employment_name=empl_src)
         duties = extract_responsibilities(descr_html or descr_txt, fallback=resp_snip or reqs_snip)
         bens   = pick_benefits(descr_txt)
+        gross_text = _gross_text_blob(
+            name,
+            salary,
+            det.get("salary") if isinstance(det, dict) else None,
+            det.get("compensation") if isinstance(det, dict) else None,
+            resp_snip,
+            reqs_snip,
+            short,
+            descr_txt,
+            duties,
+        )
+        gross_note = GROSS_NOTE_TEXT if is_gross_salary(gross_text) else ""
+
         rows.append({
             "Должность": name,
             "Работодатель": employer,
@@ -1006,6 +1091,8 @@ def map_hh(items: List[Dict[str, Any]], pause_detail: float = 0.2) -> List[Dict[
             "Льготы": bens,
             "Обязаности": duties,
             "Ссылка": url,
+            "Примечание": gross_note,
+            "gross_note": gross_note,
             "__text": f"{descr_txt} {duties or ''}",
         })
         time.sleep(pause_detail)
@@ -1025,6 +1112,7 @@ def map_gr(rows_in):
     # собрать уникальные URL из gr_search
     urls, seen = [], set()
     titles_prefill = {}
+    text_prefill = {}
     for r in rows_in or []:
         u = (r.get("url") or "").strip()
         if not u or u in seen:
@@ -1034,6 +1122,9 @@ def map_gr(rows_in):
         t = (r.get("title") or "").strip()
         if t:
             titles_prefill[u] = t
+        blob = _gross_text_blob(r)
+        if blob:
+            text_prefill[u] = blob
 
     if not urls:
         return []
@@ -1056,6 +1147,7 @@ def map_gr(rows_in):
         title = titles_prefill.get(u)
         emp = desc = None
         pub = None; sal_from = sal_to = None
+        jp = None
 
         soup = None
         try:
@@ -1079,6 +1171,8 @@ def map_gr(rows_in):
                     "Льготы": None,
                     "Обязаности": None,
                     "Ссылка": u,
+                    "Примечание": "",
+                    "gross_note": "",
                     "__text": None,
                 }
         except Exception:
@@ -1162,6 +1256,16 @@ def map_gr(rows_in):
         bens = pick_benefits(descr)
         exp = extract_experience(descr)
 
+        gross_text = _gross_text_blob(
+            title,
+            emp,
+            descr,
+            duties,
+            text_prefill.get(u),
+            jp,
+        )
+        gross_note = GROSS_NOTE_TEXT if is_gross_salary(gross_text) else ""
+
         return {
             "Должность": (title or "Вакансия").strip(),
             "Работодатель": emp,
@@ -1178,6 +1282,8 @@ def map_gr(rows_in):
             "Льготы": bens,
             "Обязаности": duties,
             "Ссылка": u,
+            "Примечание": gross_note,
+            "gross_note": gross_note,
             "__text": f"{descr} {duties or ''}".strip() or None,
         }
 
@@ -1293,8 +1399,13 @@ def _gr_save_debug(html_text: str, name: str):
 def map_avito(rows_in: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     urls = []
     seen = set()
+    prefill_text: dict[str, str] = {}
     for r in rows_in:
-        u = _normalize_url(r.get("url") or r.get("Ссылка") or "")
+        raw_url = r.get("url") or r.get("Ссылка") or ""
+        u = _normalize_url(raw_url)
+        blob = _gross_text_blob(r)
+        if blob and u:
+            prefill_text[u] = blob
         if _is_item(u) and u not in seen:
             seen.add(u); urls.append(u)
     if not urls:
@@ -1320,6 +1431,7 @@ def map_avito(rows_in: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         title = emp = desc = None
         pub = None; sal_from = sal_to = None
         soup = None
+        jp = None
         try:
             d = _polite_get(sess, u, _TIMEOUT, site="avito")
             if (not d) or (d.status_code != 200) or ("<title>" not in d.text):
@@ -1390,6 +1502,16 @@ def map_avito(rows_in: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         bens  = pick_benefits(descr)
         exp   = extract_experience(descr)
 
+        gross_text = _gross_text_blob(
+            title,
+            emp,
+            desc,
+            duties,
+            prefill_text.get(u),
+            jp,
+        )
+        gross_note = GROSS_NOTE_TEXT if is_gross_salary(gross_text) else ""
+
         return {
             "Должность": (title or "Вакансия").strip(),
             "Работодатель": emp,
@@ -1406,6 +1528,8 @@ def map_avito(rows_in: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "Льготы": bens,
             "Обязаности": duties,
             "Ссылка": u,
+            "Примечание": gross_note,
+            "gross_note": gross_note,
             "__text": f"{descr} {duties or ''}".strip() or None,
         }
 
@@ -1664,6 +1788,8 @@ def to_df(rows: List[Dict[str, Any]]) -> pd.DataFrame:
     for c in TEMPLATE_COLS:
         if c not in df.columns: df[c] = None
     df = df[TEMPLATE_COLS]
+    if "Примечание" in df.columns:
+        df["Примечание"] = df["Примечание"].fillna("")
     if "Ссылка" in df.columns:
         df = df.drop_duplicates(subset=["Ссылка"], keep="first")
     df = df.drop_duplicates(subset=["Должность","Работодатель"], keep="first")
