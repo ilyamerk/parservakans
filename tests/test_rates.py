@@ -5,6 +5,7 @@ from fetch_vacancies import (
     is_shift_rate,
     extract_rate,
     collect_rate_rows,
+    filter_rows_without_shift_rates,
 )
 
 
@@ -84,6 +85,22 @@ class CollectRateRowsTests(unittest.TestCase):
         self.assertEqual(shift["value"], "1800")
         self.assertEqual(hourly["url"], row["Ссылка"])
         self.assertEqual(shift["url"], row["Ссылка"])
+
+
+class FilterShiftRowsTests(unittest.TestCase):
+    def test_filter_excludes_shift_rows_from_main(self):
+        rows = [
+            {"Ссылка": "https://example.com/a"},
+            {"Ссылка": "https://example.com/b"},
+        ]
+        rate_rows = [
+            {"type": "shift", "url": "https://example.com/a"},
+            {"type": "hourly", "url": "https://example.com/b"},
+        ]
+        filtered = filter_rows_without_shift_rates(rows, rate_rows)
+        urls = {row["Ссылка"] for row in filtered}
+        self.assertNotIn("https://example.com/a", urls)
+        self.assertIn("https://example.com/b", urls)
 
 
 if __name__ == "__main__":

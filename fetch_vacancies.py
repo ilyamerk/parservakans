@@ -852,6 +852,25 @@ def collect_rate_rows(rows: list[dict]) -> list[dict]:
     return collected
 
 
+def filter_rows_without_shift_rates(rows: list[dict], rate_rows: list[dict]) -> list[dict]:
+    if not rows:
+        return []
+    shift_urls = {
+        str(item.get("url") or "").strip()
+        for item in rate_rows or []
+        if str(item.get("type") or "").lower() == "shift"
+    }
+    if not shift_urls:
+        return rows
+    filtered: list[dict] = []
+    for row in rows:
+        url = str(row.get("Ссылка") or row.get("url") or "").strip()
+        if url and url in shift_urls:
+            continue
+        filtered.append(row)
+    return filtered
+
+
 def is_gross_salary(text: str) -> bool:
     """Return True if the text contains markers that salary is gross."""
     if not text:
@@ -2190,8 +2209,9 @@ def main():
     else:
         print("Фильтр по роли отключен (--no_filter).")
 
-    df = to_df(rows)
     rate_rows = collect_rate_rows(rows)
+    rows_main = filter_rows_without_shift_rates(rows, rate_rows)
+    df = to_df(rows_main)
 
     # Чистка ссылок перед экспортом (www.www и query)
     if "Ссылка" in df.columns:
