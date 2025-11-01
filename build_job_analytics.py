@@ -1,5 +1,6 @@
 import argparse
 from pathlib import Path
+import json
 import re
 import math
 import pandas as pd
@@ -132,7 +133,7 @@ def compute_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
 
 
-def write_excel(df: pd.DataFrame, path: Path):
+def write_excel(df: pd.DataFrame, path: Path, rates: list[dict] | None = None):
     # 1) Нормализуем колонку со ссылками заранее (если есть)
     if "Ссылка" in df.columns:
         try:
@@ -215,6 +216,47 @@ def write_excel(df: pd.DataFrame, path: Path):
                 max_len = len(str(col))
             ws.set_column(idx, idx, min(max_len + 2, 60))
 
+        if rates:
+            sheet_name = "Ставки (час/смена)"
+            rate_rows: list[dict[str, str]] = []
+            for item in rates:
+                if not isinstance(item, dict):
+                    continue
+                value = str(item.get("value") or "").strip()
+                if not value:
+                    continue
+                rate_type = str(item.get("type") or "").lower()
+                url_val = str(item.get("url") or "").strip()
+                rate_rows.append({
+                    "Ставка в час": value if rate_type == "hourly" else "",
+                    "Ставка за смену": value if rate_type == "shift" else "",
+                    "Ссылка": url_val,
+                })
+
+            if rate_rows:
+                df_rates = pd.DataFrame(rate_rows, columns=["Ставка в час", "Ставка за смену", "Ссылка"])
+                df_rates.to_excel(xl, sheet_name=sheet_name, index=False)
+                ws_rates = xl.sheets[sheet_name]
+                try:
+                    ws_rates.freeze_panes(1, 0)
+                except Exception:
+                    pass
+                try:
+                    col_idx = 2
+                    for ridx, link in enumerate(df_rates["Ссылка"].astype(str), start=1):
+                        u = (link or "").strip()
+                        if u.startswith("http"):
+                            ws_rates.write_url(ridx, col_idx, u, fmt_link, u)
+                        else:
+                            ws_rates.write(ridx, col_idx, u)
+                except Exception:
+                    pass
+                try:
+                    ws_rates.set_column(0, 1, 26)
+                    ws_rates.set_column(2, 2, 60)
+                except Exception:
+                    pass
+
 
 
 def main():
@@ -229,7 +271,21 @@ def main():
     df = normalize_columns(df)
     df = coerce_numbers(df)
     df = compute_metrics(df)
-    write_excel(df, dst)
+
+    rates_path = Path(str(src) + ".rates.json")
+    rates_data: list[dict] | None = None
+    if rates_path.exists():
+        try:
+            with open(rates_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict) and isinstance(data.get("items"), list):
+                rates_data = [item for item in data.get("items", []) if isinstance(item, dict)]
+            elif isinstance(data, list):
+                rates_data = [item for item in data if isinstance(item, dict)]
+        except Exception:
+            rates_data = None
+
+    write_excel(df, dst, rates=rates_data)
     print(f"Готово: {dst} ({len(df)} строк)")
 
 if __name__ == "__main__":

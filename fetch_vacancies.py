@@ -525,6 +525,214 @@ _GROSS_NEG_PATTERNS = [
 _NBSP_RE = re.compile(r"\u00a0", re.UNICODE)
 
 
+def _normalize_rate_text(text: str) -> str:
+    if not text:
+        return ""
+    cleaned = _NBSP_RE.sub(" ", str(text))
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned.strip()
+
+
+_RATE_LOWER_RE = re.compile(r"\s+", re.UNICODE)
+
+_HOURLY_MARKERS = [
+    r"\bв\s*час\b",
+    r"/\s*ч(?:ас)?\b",
+    r"\bчасова[яе]\s*ставка\b",
+    r"₽\s*/\s*ч",
+    r"руб\.?\s*/\s*ч",
+    r"\brur/hour\b",
+    r"\brub/hour\b",
+    r"\brub/hr\b",
+    r"\buah/hour\b",
+    r"\beur/hour\b",
+    r"\busd/hour\b",
+    r"\$\s*/\s*hour",
+    r"\$\s*/\s*hr",
+    r"\bper[-\s]?hour\b",
+    r"\bhourly\b",
+]
+
+_SHIFT_MARKERS = [
+    r"\bза\s*смену\b",
+    r"/\s*смен",
+    r"₽\s*/\s*смен",
+    r"руб\.?\s*/\s*смен",
+    r"\bсменн\w*\s*ставка\b",
+    r"\bсмена\b[^.,;\n\r]{0,12}[–—-]",
+    r"\bper[-\s]?shift\b",
+    r"\bshift\s*pay\b",
+]
+
+_HOURLY_MARKER_RES = [re.compile(m, re.IGNORECASE) for m in _HOURLY_MARKERS]
+_SHIFT_MARKER_RES = [re.compile(m, re.IGNORECASE) for m in _SHIFT_MARKERS]
+
+
+def _norm_for_match(text: str) -> str:
+    norm = _normalize_rate_text(text).lower()
+    return _RATE_LOWER_RE.sub(" ", norm)
+
+
+def is_hourly_rate(text: str) -> bool:
+    norm = _norm_for_match(text)
+    if not norm:
+        return False
+    return any(p.search(norm) for p in _HOURLY_MARKER_RES)
+
+
+def is_shift_rate(text: str) -> bool:
+    norm = _norm_for_match(text)
+    if not norm:
+        return False
+    return any(p.search(norm) for p in _SHIFT_MARKER_RES)
+
+
+_RATE_NUMBER_RE = re.compile(r"\d[\d\s]*(?:[\.,]\d+)?")
+_CURRENCY_TOKEN_RE = re.compile(
+    r"₽|руб\.?|rur|rub|uah|грн|₴|€|eur|usd|\$|kzt|₸|byn|br|£|gbp",
+    re.IGNORECASE,
+)
+
+
+def _parse_number_token(token: str) -> Optional[float]:
+    cleaned = token.replace(" ", "").replace("\u202f", "").replace(",", ".")
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def _currency_code(token: Optional[str]) -> Optional[str]:
+    if not token:
+        return None
+    t = token.strip().lower()
+    if t in {"₽", "руб", "руб.", "rur", "rub"}:
+        return "RUB"
+    if t in {"$", "usd"}:
+        return "USD"
+    if t in {"€", "eur"}:
+        return "EUR"
+    if t in {"uah", "грн", "₴"}:
+        return "UAH"
+    if t in {"kzt", "₸"}:
+        return "KZT"
+    if t in {"byn", "br"}:
+        return "BYN"
+    if t in {"£", "gbp"}:
+        return "GBP"
+    return token.strip().upper()
+
+
+def _replace_currency_words(value: str) -> str:
+    repl = [
+        (r"(?i)\bруб\.?\b", "₽"),
+        (r"(?i)\brub\b", "₽"),
+        (r"(?i)\brur\b", "₽"),
+        (r"(?i)\bгрн\b", "₴"),
+        (r"(?i)\buah\b", "₴"),
+        (r"(?i)\busd\b", "$"),
+        (r"(?i)\beur\b", "€"),
+        (r"(?i)\bkzt\b", "₸"),
+        (r"(?i)\bbyn\b", "Br"),
+        (r"(?i)\bgbp\b", "£"),
+        (r"(?i)\bbr\b", "Br"),
+    ]
+    out = value
+    for pattern, repl_val in repl:
+        out = re.sub(pattern, repl_val, out)
+    return out
+
+
+def _clean_units(value: str) -> str:
+    value = re.sub(
+        r"(?i)(?:\s*(?:/|в|per[-\s]?|за)\s*(?:час|ч|hour|hr|смен[ауы]|shift|сменн\w*\s*ставка))+",
+        "",
+        value,
+    )
+    return value.strip()
+
+
+def _select_number_matches(text: str, matches: list[re.Match[str]]) -> list[re.Match[str]]:
+    relevant: list[re.Match[str]] = []
+    for m in matches:
+        start, end = m.span()
+        before = text[max(0, start - 6):start]
+        after = text[end:end + 8]
+        if _CURRENCY_TOKEN_RE.search(before) or re.match(r"\s*(?:₽|\$|€|£|₴|₸)", after):
+            relevant.append(m)
+            continue
+        if re.search(r"(?i)(?:руб\.?|rur|rub|uah|грн|eur|usd|kzt|byn|gbp|br)$", before):
+            relevant.append(m)
+            continue
+        if re.match(r"(?i)\s*(?:/|per[-\s]?|в|за)\s*(?:час|ч|hour|hr|смен|shift)", after):
+            relevant.append(m)
+            continue
+    return relevant
+
+
+def extract_rate(text: str) -> dict | None:
+    segment = _normalize_rate_text(text)
+    if not segment:
+        return None
+    matches = list(_RATE_NUMBER_RE.finditer(segment))
+    if not matches:
+        return None
+    selected = _select_number_matches(segment, matches)
+    has_range_words = "от" in segment.lower() and "до" in segment.lower()
+    if not selected:
+        if has_range_words and len(matches) >= 2:
+            selected = matches[:2]
+        elif len(matches) >= 2:
+            selected = matches[-2:]
+        else:
+            selected = matches[-1:]
+    elif len(selected) == 1 and has_range_words and len(matches) >= 2:
+        selected = matches[:2]
+    if not selected:
+        return None
+    numbers: list[float] = []
+    for m in selected:
+        val = _parse_number_token(m.group(0))
+        if val is None:
+            continue
+        numbers.append(val)
+    if not numbers:
+        return None
+    min_val = numbers[0]
+    max_val = numbers[1] if len(numbers) > 1 else numbers[0]
+    if min_val is not None and max_val is not None and min_val > max_val:
+        min_val, max_val = max_val, min_val
+    currency_match = _CURRENCY_TOKEN_RE.search(segment)
+    currency = _currency_code(currency_match.group(0)) if currency_match else None
+    start = min(m.start() for m in selected)
+    end = max(m.end() for m in selected)
+    prefix_slice = segment[max(0, start - 6):start]
+    prefix_curr = re.search(r"(?i)(₽|\$|€|£|₴|₸|руб\.?|rur|rub|uah|грн|usd|eur|kzt|byn|gbp|br)\s*$", prefix_slice)
+    if prefix_curr:
+        start = max(0, start - (len(prefix_slice) - prefix_curr.start()))
+    elif has_range_words:
+        word_slice_start = max(0, start - 3)
+        prefix_word = segment[word_slice_start:start]
+        if prefix_word.lower() == "от ":
+            start = word_slice_start
+    while end < len(segment) and segment[end] not in ".,;!\n\r":
+        end += 1
+    raw_value = segment[start:end].strip()
+    cleaned_value = _clean_units(raw_value)
+    cleaned_value = _replace_currency_words(cleaned_value)
+    cleaned_value = re.sub(r"(?<=\d)\s*[-–—]\s*(?=\d)", "–", cleaned_value)
+    cleaned_value = re.sub(r"\s+", " ", cleaned_value).strip()
+    if not cleaned_value:
+        cleaned_value = raw_value
+    return {
+        "value": cleaned_value,
+        "min": min_val,
+        "max": max_val,
+        "currency": currency,
+        "raw": raw_value,
+    }
+
+
 def _collect_text_chunks(value) -> list[str]:
     texts: list[str] = []
     if isinstance(value, str):
@@ -551,6 +759,97 @@ def _gross_text_blob(*parts) -> str:
     for part in parts:
         out.extend(_collect_text_chunks(part))
     return " ".join(out)
+
+
+def _rate_text_blob(*parts) -> str:
+    out: list[str] = []
+    for part in parts:
+        out.extend(_collect_text_chunks(part))
+    return " ".join(out)
+
+
+def _extract_rate_segments(text: str, patterns: list[re.Pattern[str]]) -> list[str]:
+    cleaned = _normalize_rate_text(text)
+    if not cleaned:
+        return []
+    lowered = cleaned.lower()
+    segments: list[str] = []
+    for pat in patterns:
+        for match in pat.finditer(lowered):
+            start, end = match.span()
+            left = start
+            while left > 0 and cleaned[left - 1] not in ".,;!\n\r":
+                left -= 1
+            right = end
+            while right < len(cleaned) and cleaned[right] not in ".,;!\n\r":
+                right += 1
+            segment = cleaned[left:right].strip()
+            if not segment:
+                continue
+            rel_start = start - left
+            rel_end = end - left
+            seg_lower = segment.lower()
+            separators = [" или ", " либо ", " / "]
+            before_idx = -1
+            before_sep_len = 0
+            for sep in separators:
+                pos = seg_lower.rfind(sep, 0, rel_start)
+                if pos > before_idx:
+                    before_idx = pos
+                    before_sep_len = len(sep)
+            if before_idx != -1:
+                segment = segment[before_idx + before_sep_len:]
+                seg_lower = segment.lower()
+                rel_end -= before_idx + before_sep_len
+            after_pos = len(segment)
+            for sep in separators:
+                pos = seg_lower.find(sep, rel_end)
+                if pos != -1:
+                    after_pos = min(after_pos, pos)
+            segment = segment[:after_pos].strip()
+            if segment and segment not in segments:
+                segments.append(segment)
+    return segments
+
+
+def collect_rate_rows(rows: list[dict]) -> list[dict]:
+    collected: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for row in rows or []:
+        url = (row.get("Ссылка") or row.get("url") or "").strip()
+        if not url:
+            continue
+        text_blob = _rate_text_blob(
+            row.get("__rate_text"),
+            row.get("__text"),
+            row.get("Должность"),
+            row.get("Обязаности"),
+            row.get("Льготы"),
+            row.get("График"),
+            row.get("Труд-во"),
+        )
+        if not text_blob:
+            continue
+        for rate_type, pats in (("hourly", _HOURLY_MARKER_RES), ("shift", _SHIFT_MARKER_RES)):
+            if (url, rate_type) in seen:
+                continue
+            segments = _extract_rate_segments(text_blob, pats)
+            for seg in segments:
+                info = extract_rate(seg)
+                if info and info.get("value"):
+                    info["raw"] = seg
+                    collected.append({
+                        "type": rate_type,
+                        "value": info.get("value"),
+                        "min": info.get("min"),
+                        "max": info.get("max"),
+                        "currency": info.get("currency"),
+                        "raw": info.get("raw"),
+                        "url": url,
+                    })
+                    seen.add((url, rate_type))
+                    break
+    return collected
 
 
 def is_gross_salary(text: str) -> bool:
@@ -1074,6 +1373,19 @@ def map_hh(items: List[Dict[str, Any]], pause_detail: float = 0.2) -> List[Dict[
             duties,
         )
         gross_note = GROSS_NOTE_TEXT if is_gross_salary(gross_text) else ""
+        rate_text = _rate_text_blob(
+            name,
+            salary,
+            det.get("salary") if isinstance(det, dict) else None,
+            det.get("compensation") if isinstance(det, dict) else None,
+            resp_snip,
+            reqs_snip,
+            short,
+            descr_txt,
+            duties,
+            bens,
+            graph,
+        )
 
         rows.append({
             "Должность": name,
@@ -1094,6 +1406,7 @@ def map_hh(items: List[Dict[str, Any]], pause_detail: float = 0.2) -> List[Dict[
             "Примечание": gross_note,
             "gross_note": gross_note,
             "__text": f"{descr_txt} {duties or ''}",
+            "__rate_text": rate_text,
         })
         time.sleep(pause_detail)
     return rows
@@ -1265,6 +1578,16 @@ def map_gr(rows_in):
             jp,
         )
         gross_note = GROSS_NOTE_TEXT if is_gross_salary(gross_text) else ""
+        rate_text = _rate_text_blob(
+            title,
+            emp,
+            descr,
+            duties,
+            bens,
+            text_prefill.get(u),
+            jp,
+            graph,
+        )
 
         return {
             "Должность": (title or "Вакансия").strip(),
@@ -1285,6 +1608,7 @@ def map_gr(rows_in):
             "Примечание": gross_note,
             "gross_note": gross_note,
             "__text": f"{descr} {duties or ''}".strip() or None,
+            "__rate_text": rate_text,
         }
 
     out = []
@@ -1867,6 +2191,7 @@ def main():
         print("Фильтр по роли отключен (--no_filter).")
 
     df = to_df(rows)
+    rate_rows = collect_rate_rows(rows)
 
     # Чистка ссылок перед экспортом (www.www и query)
     if "Ссылка" in df.columns:
@@ -1881,6 +2206,14 @@ def main():
     # CSV (для пайплайна)
     df.to_csv(a.out_csv, index=False, encoding="utf-8-sig")
     print(f"Wrote {len(df)} rows -> {a.out_csv}")
+
+    rate_path = Path(str(a.out_csv) + ".rates.json")
+    try:
+        with open(rate_path, "w", encoding="utf-8") as f:
+            json.dump({"items": rate_rows}, f, ensure_ascii=False, indent=2)
+        print(f"Saved {len(rate_rows)} rate rows -> {rate_path}")
+    except Exception as e:
+        print(f"Failed to write rate JSON: {e}")
 
     # XLSX для просмотра (без \n в заголовках)
     xlsx_path = a.out_csv if str(a.out_csv).lower().endswith(".xlsx") else str(a.out_csv).rsplit(".", 1)[0] + "_view.xlsx"
