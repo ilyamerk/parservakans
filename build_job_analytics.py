@@ -10,6 +10,34 @@ import urllib.parse as _up
 LINK_DIR = Path("Exports/_links")
 LINK_DIR.mkdir(parents=True, exist_ok=True)
 
+RATES_SHEET_BASE = "Ставки (час–смена)"
+
+INVALID_SHEET_CHARS_RE = re.compile(r"[\\/\*\?\:\[\]']")
+
+
+def sanitize_sheet_name(name: str, fallback: str = "Лист") -> str:
+    s = (name or "").strip()
+    s = INVALID_SHEET_CHARS_RE.sub("–", s)
+    s = s.strip("'").strip()
+    if not s:
+        s = fallback
+    if len(s) > 31:
+        s = s[:31]
+    return s
+
+
+def unique_sheet_name(writer, desired: str) -> str:
+    base = sanitize_sheet_name(desired)
+    sheets = set(getattr(writer, "sheets", {}).keys())
+    if base not in sheets:
+        return base
+    for i in range(2, 100):
+        suffix = f" ({i})"
+        trimmed = base[: max(0, 31 - len(suffix))] + suffix
+        if trimmed not in sheets:
+            return trimmed
+    return sanitize_sheet_name(f"{base} ({len(sheets) + 1})")
+
 def make_url_shortcut(url: str) -> Path:
     """Создаёт .url-ярлык и возвращает путь к нему."""
     safe = re.sub(r"[^0-9A-Za-z]+", "_", url)[-64:]
@@ -151,7 +179,7 @@ def write_excel(df: pd.DataFrame, path: Path, rates: list[dict] | None = None):
         engine="xlsxwriter",
         engine_kwargs={"options": {"strings_to_urls": False}},
     ) as xl:
-        sheet = "Данные"
+        sheet = unique_sheet_name(xl, "Данные")
         df.to_excel(xl, sheet_name=sheet, index=False)
         ws = xl.sheets[sheet]
 
