@@ -525,6 +525,295 @@ _GROSS_NEG_PATTERNS = [
 _NBSP_RE = re.compile(r"\u00a0", re.UNICODE)
 
 
+def _normalize_rate_text(text: str) -> str:
+    if not text:
+        return ""
+    cleaned = _NBSP_RE.sub(" ", str(text))
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned.strip()
+
+
+_RATE_LOWER_RE = re.compile(r"\s+", re.UNICODE)
+
+_HOURLY_MARKERS = [
+    r"\bв\s*час\b",
+    r"/\s*ч(?:ас)?\b",
+    r"\bчасова[яе]\s*ставка\b",
+    r"₽\s*/\s*ч",
+    r"руб\.?\s*/\s*ч",
+    r"\brur/hour\b",
+    r"\brub/hour\b",
+    r"\brub/hr\b",
+    r"\buah/hour\b",
+    r"\beur/hour\b",
+    r"\busd/hour\b",
+    r"\$\s*/\s*hour",
+    r"\$\s*/\s*hr",
+    r"\bper[-\s]?hour\b",
+    r"\bhourly\b",
+]
+
+_SHIFT_MARKERS = [
+    "за смену",
+    "/смена",
+    "/смен",
+    "₽/смена",
+    "руб/смена",
+    "руб./смена",
+    "сменная ставка",
+    "per shift",
+    "per-shift",
+    "shift pay",
+]
+
+_NEGATIVE_SHIFT_HINTS = ["оклад", "месяц", "в день"]
+
+_SHIFT_PATTERNS_RAW = [
+    r"(?:€|\$|₽|руб\.?|rur)\s*(\d[\d\s]{0,12}(?:[.,]\d{1,2})?)\s*(?:–|-|до\s*)?(\d[\d\s]{0,12}(?:[.,]\d{1,2})?)?\s*(?:/|\s*)(?:смен[аи]|per\s*shift|per-shift|shift\s*pay)",
+    r"(?:от\s*)?(\d[\d\s]{0,12}(?:[.,]\d{1,2})?)\s*(?:–|-|до\s*)?(\d[\d\s]{0,12}(?:[.,]\d{1,2})?)?\s*(?:₽|руб\.?|rur|€|\$)?\s*(?:/|\s*)(?:смен[аи]|per\s*shift|per-shift|shift\s*pay)",
+]
+
+_SHIFT_GENERIC_RE = re.compile(r"смен[^\n\r]{0,40}(?:\d|₽|руб|rur|\$|€)", re.IGNORECASE)
+
+_HOURLY_MARKER_RES = [re.compile(m, re.IGNORECASE) for m in _HOURLY_MARKERS]
+_SHIFT_PATTERNS = [re.compile(p, re.IGNORECASE) for p in _SHIFT_PATTERNS_RAW]
+
+
+def _norm_for_match(text: str) -> str:
+    norm = _normalize_rate_text(text).lower()
+    return _RATE_LOWER_RE.sub(" ", norm)
+
+
+def is_hourly_rate(text: str) -> bool:
+    norm = _norm_for_match(text)
+    if not norm:
+        return False
+    return any(p.search(norm) for p in _HOURLY_MARKER_RES)
+
+
+def is_shift_rate(text: str) -> bool:
+    norm = _norm_for_match(text)
+    if not norm:
+        return False
+    if any(hint in norm for hint in _NEGATIVE_SHIFT_HINTS) and "смен" not in norm:
+        return False
+    if any(marker in norm for marker in _SHIFT_MARKERS):
+        return True
+    if "смен" in norm and _SHIFT_GENERIC_RE.search(norm):
+        return True
+    return False
+
+
+_CURRENCY_SYMBOLS = {
+    "RUB": "₽",
+    "USD": "$",
+    "EUR": "€",
+    "UAH": "₴",
+    "KZT": "₸",
+    "BYN": "Br",
+    "GBP": "£",
+}
+
+
+def _currency_symbol_from_code(code: Optional[str], fallback: Optional[str] = None) -> Optional[str]:
+    if not code:
+        return fallback
+    return _CURRENCY_SYMBOLS.get(code.upper(), fallback)
+
+
+def extract_shift_rate(text: str) -> dict | None:
+    segment = _normalize_rate_text(text)
+    if not segment:
+        return None
+    candidates: list[str] = []
+    for pattern in _SHIFT_PATTERNS:
+        for match in pattern.finditer(segment):
+            raw_value = match.group(0).strip()
+            if raw_value and raw_value not in candidates:
+                candidates.append(raw_value)
+    if not candidates:
+        fragment = _find_shift_fragment(segment)
+        if fragment:
+            candidates.append(fragment)
+    for raw_value in candidates:
+        info = extract_rate(raw_value)
+        if not info:
+            continue
+        currency_match = _CURRENCY_TOKEN_RE.search(raw_value)
+        currency_token = currency_match.group(0) if currency_match else None
+        currency_code = info.get("currency") or _currency_code(currency_token)
+        if currency_code is None and "смен" in raw_value.lower():
+            currency_code = "RUB"
+        symbol = _currency_symbol_from_code(currency_code, fallback=currency_token.strip() if currency_token else None)
+        value_display = str(info.get("value") or "").strip()
+        if currency_code == "RUB" and symbol and "₽" not in value_display:
+            value_display = f"{value_display} {symbol}".strip()
+        elif currency_code in {"USD", "EUR", "GBP"} and symbol and not value_display.startswith(symbol):
+            value_display = f"{symbol}{value_display}"
+        elif symbol and currency_code not in {"USD", "EUR", "GBP"} and symbol not in value_display:
+            value_display = f"{value_display} {symbol}".strip()
+        info["value"] = value_display or raw_value
+        info["currency"] = currency_code
+        info["raw"] = raw_value
+        return info
+    if candidates:
+        raw_value = candidates[0]
+        return {
+            "value": raw_value,
+            "min": None,
+            "max": None,
+            "currency": None,
+            "raw": raw_value,
+        }
+    return None
+
+
+_RATE_NUMBER_RE = re.compile(r"\d[\d\s]*(?:[\.,]\d+)?")
+_CURRENCY_TOKEN_RE = re.compile(
+    r"₽|руб\.?|rur|rub|uah|грн|₴|€|eur|usd|\$|kzt|₸|byn|br|£|gbp",
+    re.IGNORECASE,
+)
+
+
+def _parse_number_token(token: str) -> Optional[float]:
+    cleaned = token.replace(" ", "").replace("\u202f", "").replace(",", ".")
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def _currency_code(token: Optional[str]) -> Optional[str]:
+    if not token:
+        return None
+    t = token.strip().lower()
+    if t in {"₽", "руб", "руб.", "rur", "rub"}:
+        return "RUB"
+    if t in {"$", "usd"}:
+        return "USD"
+    if t in {"€", "eur"}:
+        return "EUR"
+    if t in {"uah", "грн", "₴"}:
+        return "UAH"
+    if t in {"kzt", "₸"}:
+        return "KZT"
+    if t in {"byn", "br"}:
+        return "BYN"
+    if t in {"£", "gbp"}:
+        return "GBP"
+    return token.strip().upper()
+
+
+def _replace_currency_words(value: str) -> str:
+    repl = [
+        (r"(?i)\bруб\.?\b", "₽"),
+        (r"(?i)\brub\b", "₽"),
+        (r"(?i)\brur\b", "₽"),
+        (r"(?i)\bгрн\b", "₴"),
+        (r"(?i)\buah\b", "₴"),
+        (r"(?i)\busd\b", "$"),
+        (r"(?i)\beur\b", "€"),
+        (r"(?i)\bkzt\b", "₸"),
+        (r"(?i)\bbyn\b", "Br"),
+        (r"(?i)\bgbp\b", "£"),
+        (r"(?i)\bbr\b", "Br"),
+    ]
+    out = value
+    for pattern, repl_val in repl:
+        out = re.sub(pattern, repl_val, out)
+    return out
+
+
+def _clean_units(value: str) -> str:
+    value = re.sub(
+        r"(?i)(?:\s*(?:/|в|per[-\s]?|за)\s*(?:час|ч|hour|hr|смен[ауы]|shift|сменн\w*\s*ставка))+",
+        "",
+        value,
+    )
+    return value.strip()
+
+
+def _select_number_matches(text: str, matches: list[re.Match[str]]) -> list[re.Match[str]]:
+    relevant: list[re.Match[str]] = []
+    for m in matches:
+        start, end = m.span()
+        before = text[max(0, start - 6):start]
+        after = text[end:end + 8]
+        if _CURRENCY_TOKEN_RE.search(before) or re.match(r"\s*(?:₽|\$|€|£|₴|₸)", after):
+            relevant.append(m)
+            continue
+        if re.search(r"(?i)(?:руб\.?|rur|rub|uah|грн|eur|usd|kzt|byn|gbp|br)$", before):
+            relevant.append(m)
+            continue
+        if re.match(r"(?i)\s*(?:/|per[-\s]?|в|за)\s*(?:час|ч|hour|hr|смен|shift)", after):
+            relevant.append(m)
+            continue
+    return relevant
+
+
+def extract_rate(text: str) -> dict | None:
+    segment = _normalize_rate_text(text)
+    if not segment:
+        return None
+    matches = list(_RATE_NUMBER_RE.finditer(segment))
+    if not matches:
+        return None
+    selected = _select_number_matches(segment, matches)
+    has_range_words = "от" in segment.lower() and "до" in segment.lower()
+    if not selected:
+        if has_range_words and len(matches) >= 2:
+            selected = matches[:2]
+        elif len(matches) >= 2:
+            selected = matches[-2:]
+        else:
+            selected = matches[-1:]
+    elif len(selected) == 1 and has_range_words and len(matches) >= 2:
+        selected = matches[:2]
+    if not selected:
+        return None
+    numbers: list[float] = []
+    for m in selected:
+        val = _parse_number_token(m.group(0))
+        if val is None:
+            continue
+        numbers.append(val)
+    if not numbers:
+        return None
+    min_val = numbers[0]
+    max_val = numbers[1] if len(numbers) > 1 else numbers[0]
+    if min_val is not None and max_val is not None and min_val > max_val:
+        min_val, max_val = max_val, min_val
+    currency_match = _CURRENCY_TOKEN_RE.search(segment)
+    currency = _currency_code(currency_match.group(0)) if currency_match else None
+    start = min(m.start() for m in selected)
+    end = max(m.end() for m in selected)
+    prefix_slice = segment[max(0, start - 6):start]
+    prefix_curr = re.search(r"(?i)(₽|\$|€|£|₴|₸|руб\.?|rur|rub|uah|грн|usd|eur|kzt|byn|gbp|br)\s*$", prefix_slice)
+    if prefix_curr:
+        start = max(0, start - (len(prefix_slice) - prefix_curr.start()))
+    elif has_range_words:
+        word_slice_start = max(0, start - 3)
+        prefix_word = segment[word_slice_start:start]
+        if prefix_word.lower() == "от ":
+            start = word_slice_start
+    while end < len(segment) and segment[end] not in ".,;!\n\r":
+        end += 1
+    raw_value = segment[start:end].strip()
+    cleaned_value = _clean_units(raw_value)
+    cleaned_value = _replace_currency_words(cleaned_value)
+    cleaned_value = re.sub(r"(?<=\d)\s*[-–—]\s*(?=\d)", "–", cleaned_value)
+    cleaned_value = re.sub(r"\s+", " ", cleaned_value).strip()
+    if not cleaned_value:
+        cleaned_value = raw_value
+    return {
+        "value": cleaned_value,
+        "min": min_val,
+        "max": max_val,
+        "currency": currency,
+        "raw": raw_value,
+    }
+
+
 def _collect_text_chunks(value) -> list[str]:
     texts: list[str] = []
     if isinstance(value, str):
@@ -551,6 +840,84 @@ def _gross_text_blob(*parts) -> str:
     for part in parts:
         out.extend(_collect_text_chunks(part))
     return " ".join(out)
+
+
+def _rate_text_blob(*parts) -> str:
+    out: list[str] = []
+    for part in parts:
+        out.extend(_collect_text_chunks(part))
+    return " ".join(out)
+
+
+def _find_shift_fragment(text: str) -> str:
+    cleaned = _normalize_rate_text(text)
+    if not cleaned:
+        return ""
+    lowered = cleaned.lower()
+    for marker in _SHIFT_MARKERS:
+        idx = lowered.find(marker)
+        if idx != -1:
+            left = idx
+            while left > 0 and cleaned[left - 1] not in ".,;!\n\r":
+                left -= 1
+            right = idx + len(marker)
+            while right < len(cleaned) and cleaned[right] not in ".,;!\n\r":
+                right += 1
+            fragment = cleaned[left:right].strip()
+            if fragment:
+                return fragment
+    idx = lowered.find("смен")
+    while idx != -1:
+        left = idx
+        while left > 0 and cleaned[left - 1] not in ".,;!\n\r":
+            left -= 1
+        right = idx
+        while right < len(cleaned) and cleaned[right] not in ".,;!\n\r":
+            right += 1
+        fragment = cleaned[left:right].strip()
+        if fragment:
+            return fragment
+        idx = lowered.find("смен", idx + 4)
+    return ""
+
+
+def collect_shift_rate_rows(rows: list[dict]) -> list[dict]:
+    collected: list[dict] = []
+    seen_urls: set[str] = set()
+    for row in rows or []:
+        url = (row.get("Ссылка") or row.get("url") or "").strip()
+        if not url or url in seen_urls:
+            continue
+        text_blob = _rate_text_blob(
+            row.get("__rate_text"),
+            row.get("__text"),
+            row.get("Должность"),
+            row.get("Обязаности"),
+            row.get("Льготы"),
+            row.get("График"),
+            row.get("Труд-во"),
+        )
+        if not text_blob:
+            continue
+        if not is_shift_rate(text_blob):
+            continue
+        rate_info = extract_shift_rate(text_blob)
+        if rate_info:
+            value = str(rate_info.get("value") or "").strip()
+            raw_value = str(rate_info.get("raw") or "").strip()
+        else:
+            value = ""
+            raw_value = _find_shift_fragment(text_blob)
+        collected.append({
+            "value": value or raw_value,
+            "min": rate_info.get("min") if rate_info else None,
+            "max": rate_info.get("max") if rate_info else None,
+            "currency": rate_info.get("currency") if rate_info else None,
+            "raw": raw_value,
+            "url": url,
+        })
+        seen_urls.add(url)
+    return collected
 
 
 def is_gross_salary(text: str) -> bool:
@@ -1074,6 +1441,19 @@ def map_hh(items: List[Dict[str, Any]], pause_detail: float = 0.2) -> List[Dict[
             duties,
         )
         gross_note = GROSS_NOTE_TEXT if is_gross_salary(gross_text) else ""
+        rate_text = _rate_text_blob(
+            name,
+            salary,
+            det.get("salary") if isinstance(det, dict) else None,
+            det.get("compensation") if isinstance(det, dict) else None,
+            resp_snip,
+            reqs_snip,
+            short,
+            descr_txt,
+            duties,
+            bens,
+            graph,
+        )
 
         rows.append({
             "Должность": name,
@@ -1094,6 +1474,7 @@ def map_hh(items: List[Dict[str, Any]], pause_detail: float = 0.2) -> List[Dict[
             "Примечание": gross_note,
             "gross_note": gross_note,
             "__text": f"{descr_txt} {duties or ''}",
+            "__rate_text": rate_text,
         })
         time.sleep(pause_detail)
     return rows
@@ -1265,6 +1646,16 @@ def map_gr(rows_in):
             jp,
         )
         gross_note = GROSS_NOTE_TEXT if is_gross_salary(gross_text) else ""
+        rate_text = _rate_text_blob(
+            title,
+            emp,
+            descr,
+            duties,
+            bens,
+            text_prefill.get(u),
+            jp,
+            graph,
+        )
 
         return {
             "Должность": (title or "Вакансия").strip(),
@@ -1285,6 +1676,7 @@ def map_gr(rows_in):
             "Примечание": gross_note,
             "gross_note": gross_note,
             "__text": f"{descr} {duties or ''}".strip() or None,
+            "__rate_text": rate_text,
         }
 
     out = []
@@ -1866,6 +2258,7 @@ def main():
     else:
         print("Фильтр по роли отключен (--no_filter).")
 
+    rate_rows = collect_shift_rate_rows(rows)
     df = to_df(rows)
 
     # Чистка ссылок перед экспортом (www.www и query)
@@ -1881,6 +2274,14 @@ def main():
     # CSV (для пайплайна)
     df.to_csv(a.out_csv, index=False, encoding="utf-8-sig")
     print(f"Wrote {len(df)} rows -> {a.out_csv}")
+
+    rate_path = Path(str(a.out_csv) + ".rates.json")
+    try:
+        with open(rate_path, "w", encoding="utf-8") as f:
+            json.dump({"items": rate_rows}, f, ensure_ascii=False, indent=2)
+        print(f"Saved {len(rate_rows)} rate rows -> {rate_path}")
+    except Exception as e:
+        print(f"Failed to write rate JSON: {e}")
 
     # XLSX для просмотра (без \n в заголовках)
     xlsx_path = a.out_csv if str(a.out_csv).lower().endswith(".xlsx") else str(a.out_csv).rsplit(".", 1)[0] + "_view.xlsx"
