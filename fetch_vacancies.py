@@ -1,5 +1,6 @@
 # parsers/fetch_vacancies.py  — версия с Avito (requests -> fallback на Playwright)
 import argparse, requests, html
+from dataclasses import dataclass
 from typing import Tuple, Optional
 from datetime import datetime, timedelta, timezone
 import pandas as pd
@@ -1250,26 +1251,102 @@ def extract_responsibilities(html_or_text: str, fallback: Optional[str] = None) 
     lines = [l for l in lines if l]
     return ("; ".join(lines)[:3000]) if lines else fallback
 
-def extract_shift_len(text: str) -> Optional[tuple]:
-    t = (text or "").lower().replace("\xa0", " ").replace("–", "-")
-    m = re.search(r"\bпо\s*(\d{1,2})\s*[-–]\s*(\d{1,2})\s*час", t) or \
-        re.search(r"\b(\d{1,2})\s*[-–]\s*(\d{1,2})\s*час", t) or \
-        re.search(r"\bс\s*(\d{1,2})\s*до\s*(\d{1,2})\s*час", t)
-    if m:
+@dataclass
+class ShiftLength:
+    """Информация о длительности смены."""
+
+    hours: Optional[float]
+    raw: Optional[str] = None
+
+
+_HOURS_KEYWORDS = ("смен", "граф", "рабоч", "сут", "смена", "день")
+_HOURS_BADWORDS = ("перерыв", "обед", "пауз", "минут")
+
+
+def _calc_hours_from_times(start_h: int, start_m: int, end_h: int, end_m: int) -> Optional[float]:
+    """Посчитать длительность смены по времени начала/окончания."""
+
+    start = start_h + start_m / 60.0
+    end = end_h + end_m / 60.0
+    duration = end - start
+    if duration <= 0:
+        duration += 24.0
+    if 0.5 <= duration <= 24.0:
+        return round(duration, 2)
+    return None
+
+
+def extract_shift_len(text: str) -> Optional[ShiftLength]:
+    t_raw = text or ""
+    if not t_raw:
+        return None
+
+    t = t_raw.lower().replace("\xa0", " ")
+    t = t.replace("–", "-").replace("—", "-").replace("−", "-")
+    t = t.replace("ч.", "ч").replace("час.", "час")
+
+    # 1) Пробуем распознать временные промежутки: "с 9:00 до 21:00"
+    time_re = re.compile(r"\bс\s*(\d{1,2})(?::(\d{1,2}))?\s*(?:до|-)\s*(\d{1,2})(?::(\d{1,2}))?", re.I)
+    for m in time_re.finditer(t):
+        tail = t[m.end():m.end() + 6]
+        if any(w in tail for w in ("лет", "год", "месяц", "недел")):
+            continue
+        start_h = int(m.group(1))
+        end_h = int(m.group(3))
+        start_m = int(m.group(2)) if m.group(2) else 0
+        end_m = int(m.group(4)) if m.group(4) else 0
+        if not (0 <= start_h <= 23 and 0 <= end_h <= 23):
+            continue
+        hours = _calc_hours_from_times(start_h, start_m, end_h, end_m)
+        if hours:
+            raw = m.group(0).strip()
+            return ShiftLength(hours=hours, raw=raw)
+
+    # 2) Диапазон "10-12 часов"
+    range_re = re.compile(r"\b(\d{1,2})\s*[-−–]\s*(\d{1,2})\s*час", re.I)
+    for m in range_re.finditer(t):
         a, b = int(m.group(1)), int(m.group(2))
         if 1 <= a <= 24 and 1 <= b <= 24:
-            return ("text", f"'{a}-{b}")
-    m = re.search(r"\b(\d{1,2})\s*[- ]?\s*час(?:овая)?\b|\bсмена\s*(\d{1,2})\s*час", t)
-    if m:
-        v = m.group(1) or m.group(2)
-        h = float(v)
-        if 1 <= h <= 24:
-            return ("num", h)
-    m = re.search(r"\b(?:\d\s*/\s*\d|сутк\w*/\w+)\b.*?\b(\d{1,2})\s*час", t)
-    if m:
-        h = float(m.group(1))
-        if 1 <= h <= 24:
-            return ("num", h)
+            avg = round((a + b) / 2.0, 2)
+            return ShiftLength(hours=avg, raw=m.group(0).strip())
+
+    # 3) Прямое указание "смены по 12 часов", "12-часовая"
+    hours_re = re.compile(
+        r"\b(\d{1,2})(?:\s*[-−–]?\s*(?:ти|ти\s*)?)?\s*(?:час(?:ов|а|овой|овая|овые|овый)?|ч\b)",
+        re.I,
+    )
+    candidates = []
+    for m in hours_re.finditer(t):
+        try:
+            val = int(m.group(1))
+        except (TypeError, ValueError):
+            continue
+        if not (1 <= val <= 24):
+            continue
+        tail = t[m.end():m.end() + 6]
+        if any(w in tail for w in ("лет", "год", "месяц", "недел")):
+            continue
+        ctx_start = max(0, m.start() - 25)
+        ctx_end = min(len(t), m.end() + 25)
+        ctx = t[ctx_start:ctx_end]
+        weight = 0.0
+        if any(bad in ctx for bad in _HOURS_BADWORDS):
+            weight -= 3.0
+        if any(good in ctx for good in _HOURS_KEYWORDS):
+            weight += 3.0
+        if "смен" in ctx:
+            weight += 1.5
+        if "рабоч" in ctx or "граф" in ctx:
+            weight += 1.0
+        weight += val / 50.0  # чуть предпочитаем более длинные смены
+        candidates.append((weight, -m.start(), float(val), m.group(0).strip()))
+
+    if candidates:
+        best = max(candidates)
+        weight, _, hours, raw = best
+        if weight > -1.0:
+            return ShiftLength(hours=hours, raw=raw)
+
     return None
 
 BENEFITS = ["дмс","медицинская страховка","страхование","питание","бесплатное питание","корпоративное питание",
@@ -1351,22 +1428,33 @@ def map_hh(items: List[Dict[str, Any]], pause_detail: float = 0.2) -> List[Dict[
         published = _iso_date(v.get("published_at") or det.get("published_at"))
         hour, shift = extract_comp(descr_txt)
         graph = extract_schedule_strict(descr_txt, sched_src=None)
+
         sl = extract_shift_len(descr_txt)
+        shift_len = None
+        shift_hours_val = None
         if sl:
-            shift_len = sl[1]
-            if isinstance(shift_len, (int, float)) and hour and not shift:
-                shift = hour * float(shift_len)
-        else:
-            shift_len = 12.0 if (hour or shift) else None
-        if (not graph or shift_len is None) and isinstance(url, str) and url.startswith("http"):
+            if isinstance(sl.hours, (int, float)):
+                shift_hours_val = float(sl.hours)
+            shift_len = sl.raw or (shift_hours_val if shift_hours_val is not None else None)
+            if shift_hours_val and hour and not shift:
+                shift = hour * shift_hours_val
+
+        if (not graph or shift_hours_val is None or shift_len is None) and isinstance(url, str) and url.startswith("http"):
             g_html, hours_html = _extract_schedule_from_html(url)
             if not graph and g_html:
                 graph = g_html
-            if shift_len is None and hours_html:
-                shift_len = float(hours_html)
-                if hour and not shift:
-                    shift = hour * float(shift_len)
-        shift_hours_val = shift_len if isinstance(shift_len, (int, float)) else None
+            if hours_html:
+                if shift_hours_val is None:
+                    shift_hours_val = float(hours_html)
+                    if hour and not shift:
+                        shift = hour * shift_hours_val
+                if shift_len is None:
+                    shift_len = float(hours_html)
+
+        if shift_len is None and (hour or shift):
+            shift_len = DEFAULT_SHIFT_HOURS
+        if shift_hours_val is None and isinstance(shift_len, (int, float)):
+            shift_hours_val = float(shift_len)
         if hour is None:
             salary_hour, salary_shift, eff_hours = derive_hour_shift_from_salary(sal_from_tr, sal_to_tr, shift_hours_val)
             if salary_hour is not None:
@@ -1564,14 +1652,19 @@ def map_gr(rows_in):
         descr = (desc or "").strip()
         hour, shift_sum = extract_comp(descr)
         shift_len = None
+        shift_hours_val = None
         sl = extract_shift_len(descr)
         if sl:
-            shift_len = sl[1]
-            if isinstance(shift_len, (int, float)) and hour and not shift_sum:
-                shift_sum = hour * float(shift_len)
-        else:
-            shift_len = 12.0 if (hour or shift_sum) else None
-        shift_hours_val = shift_len if isinstance(shift_len, (int, float)) else None
+            if isinstance(sl.hours, (int, float)):
+                shift_hours_val = float(sl.hours)
+            shift_len = sl.raw or (shift_hours_val if shift_hours_val is not None else None)
+            if shift_hours_val and hour and not shift_sum:
+                shift_sum = hour * shift_hours_val
+
+        if shift_len is None and (hour or shift_sum):
+            shift_len = DEFAULT_SHIFT_HOURS
+        if shift_hours_val is None and isinstance(shift_len, (int, float)):
+            shift_hours_val = float(shift_len)
         if hour is None:
             salary_hour, salary_shift, eff_hours = derive_hour_shift_from_salary(sal_from, sal_to, shift_hours_val)
             if salary_hour is not None:
@@ -1821,14 +1914,19 @@ def map_avito(rows_in: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         descr = (desc or "").strip()
         hour, shift_sum = extract_comp(descr)
         shift_len = None
+        shift_hours_val = None
         sl = extract_shift_len(descr)
         if sl:
-            shift_len = sl[1]
-            if isinstance(shift_len, (int, float)) and hour and not shift_sum:
-                shift_sum = hour * float(shift_len)
-        else:
-            shift_len = 12.0 if (hour or shift_sum) else None
-        shift_hours_val = shift_len if isinstance(shift_len, (int, float)) else None
+            if isinstance(sl.hours, (int, float)):
+                shift_hours_val = float(sl.hours)
+            shift_len = sl.raw or (shift_hours_val if shift_hours_val is not None else None)
+            if shift_hours_val and hour and not shift_sum:
+                shift_sum = hour * shift_hours_val
+
+        if shift_len is None and (hour or shift_sum):
+            shift_len = DEFAULT_SHIFT_HOURS
+        if shift_hours_val is None and isinstance(shift_len, (int, float)):
+            shift_hours_val = float(shift_len)
         if hour is None:
             salary_hour, salary_shift, eff_hours = derive_hour_shift_from_salary(sal_from, sal_to, shift_hours_val)
             if salary_hour is not None:
