@@ -1435,7 +1435,10 @@ def map_hh(items: List[Dict[str, Any]], pause_detail: float = 0.2) -> List[Dict[
         if sl:
             if isinstance(sl.hours, (int, float)):
                 shift_hours_val = float(sl.hours)
-            shift_len = sl.raw or (shift_hours_val if shift_hours_val is not None else None)
+            if shift_hours_val is not None:
+                shift_len = shift_hours_val
+            elif sl.raw:
+                shift_len = sl.raw
             if shift_hours_val and hour and not shift:
                 shift = hour * shift_hours_val
 
@@ -1657,7 +1660,10 @@ def map_gr(rows_in):
         if sl:
             if isinstance(sl.hours, (int, float)):
                 shift_hours_val = float(sl.hours)
-            shift_len = sl.raw or (shift_hours_val if shift_hours_val is not None else None)
+            if shift_hours_val is not None:
+                shift_len = shift_hours_val
+            elif sl.raw:
+                shift_len = sl.raw
             if shift_hours_val and hour and not shift_sum:
                 shift_sum = hour * shift_hours_val
 
@@ -1919,7 +1925,10 @@ def map_avito(rows_in: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if sl:
             if isinstance(sl.hours, (int, float)):
                 shift_hours_val = float(sl.hours)
-            shift_len = sl.raw or (shift_hours_val if shift_hours_val is not None else None)
+            if shift_hours_val is not None:
+                shift_len = shift_hours_val
+            elif sl.raw:
+                shift_len = sl.raw
             if shift_hours_val and hour and not shift_sum:
                 shift_sum = hour * shift_hours_val
 
