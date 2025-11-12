@@ -503,7 +503,7 @@ TEMPLATE_COLS = [
     "Должность","Работодатель","Дата публикации",
     "ЗП от (т.р.)","ЗП до (т.р.)",
     "Средний совокупный доход при графике 2/2 по 12 часов","В час","Ставка (расчётная) в час, ₽","Длительность \nсмены",
-    "Требуемый\nопыт","Труд-во","График","Частота \nвыплат","Льготы","Обязаности","Ссылка","Примечание"
+    "Требуемый\nопыт","Труд-во","График","Частота \nвыплат","Льготы","Обязаности","working_hours","Ссылка","Примечание"
 ]
 
 GROSS_NOTE_TEXT = "До вычета налога"
@@ -1349,6 +1349,459 @@ def extract_shift_len(text: str) -> Optional[ShiftLength]:
 
     return None
 
+
+@dataclass
+class WorkingHoursContext:
+    text: str
+    url: Optional[str] = None
+    selector: Optional[str] = None
+    weight: int = 0
+    label: Optional[str] = None
+
+
+def _empty_working_hours_dict() -> dict:
+    return {
+        "raw_matches": [],
+        "normalized": {"by_days": [], "is_247": False, "shift_based": None},
+        "schedule_hint": None,
+        "confidence": 0.0,
+        "source": [],
+        "lang": None,
+        "notes": None,
+        "log": [],
+    }
+
+
+_WORK_SECTION_HINTS = (
+    "часы работы",
+    "режим работы",
+    "режим",
+    "график",
+    "графік",
+    "schedule",
+    "opening hours",
+    "working hours",
+    "shift",
+    "смен",
+    "вахт",
+    "сутк",
+)
+
+_FLEXIBLE_RE = re.compile(
+    r"(гибк\w*\s+график|по\s+согласованию|по\s+договоренности|flexible\s+(?:schedule|hours))",
+    re.IGNORECASE,
+)
+_IS247_RE = re.compile(
+    r"(24\s*[/x]\s*7|круглосуточ|без\s+выходных|around\s+the\s+clock|цілодоб)",
+    re.IGNORECASE,
+)
+_CLOSED_RE = re.compile(r"(выходн|нерабоч|closed|off)", re.IGNORECASE)
+
+_DAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+_DAY_TOKEN_MAP = {
+    "пн": "Mon",
+    "понедельник": "Mon",
+    "понеділок": "Mon",
+    "mon": "Mon",
+    "monday": "Mon",
+    "вт": "Tue",
+    "вторник": "Tue",
+    "вівторок": "Tue",
+    "tue": "Tue",
+    "tues": "Tue",
+    "tuesday": "Tue",
+    "ср": "Wed",
+    "среда": "Wed",
+    "середа": "Wed",
+    "wed": "Wed",
+    "wednesday": "Wed",
+    "чт": "Thu",
+    "четверг": "Thu",
+    "четвер": "Thu",
+    "thu": "Thu",
+    "thur": "Thu",
+    "thurs": "Thu",
+    "thursday": "Thu",
+    "пт": "Fri",
+    "пятница": "Fri",
+    "п'ятниця": "Fri",
+    "fri": "Fri",
+    "friday": "Fri",
+    "сб": "Sat",
+    "суббота": "Sat",
+    "субота": "Sat",
+    "sat": "Sat",
+    "saturday": "Sat",
+    "вс": "Sun",
+    "воскресенье": "Sun",
+    "неделя": "Sun",
+    "неділя": "Sun",
+    "нд": "Sun",
+    "sun": "Sun",
+    "sunday": "Sun",
+}
+_DAY_TOKEN_PATTERN = re.compile(
+    r"\b(" + "|".join(sorted(_DAY_TOKEN_MAP.keys(), key=len, reverse=True)) + r")\.?\b",
+    re.IGNORECASE,
+)
+_DAY_RANGE_PATTERN = re.compile(
+    r"\b(" + "|".join(sorted(_DAY_TOKEN_MAP.keys(), key=len, reverse=True)) + r")\.?\s*[-–—]\s*(" + "|".join(sorted(_DAY_TOKEN_MAP.keys(), key=len, reverse=True)) + r")\.?\b",
+    re.IGNORECASE,
+)
+_SEG_SPLIT_PATTERN = re.compile(
+    r"(?:(?:;|\||\n)|,(?=\s*(?:" + "|".join(sorted(_DAY_TOKEN_MAP.keys(), key=len, reverse=True)) + r"|ежеднев|daily|будн|weekdays|выходн|weekend)))",
+    re.IGNORECASE,
+)
+
+_TIME_RANGE_RE = re.compile(
+    r"(\d{1,2}(?::\d{1,2})?\s*(?:am|pm|a\.m\.|p\.m\.)?)\s*[-–—~]\s*(\d{1,2}(?::\d{1,2})?\s*(?:am|pm|a\.m\.|p\.m\.)?)",
+    re.IGNORECASE,
+)
+_FROM_TO_RE = re.compile(
+    r"(?:с|from)\s*(\d{1,2}(?::\d{1,2})?)\s*(?:до|to)\s*(\d{1,2}(?::\d{1,2})?)",
+    re.IGNORECASE,
+)
+_SIMPLE_RANGE_RE = re.compile(r"\b(\d{1,2})\s*[-–—]\s*(\d{1,2})\b")
+
+
+def _detect_lang(text: str) -> Optional[str]:
+    t = text or ""
+    low = t.lower()
+    if re.search(r"[ієїґ]", low):
+        return "uk"
+    if re.search(r"[а-яё]", low):
+        return "ru"
+    if re.search(r"[a-z]", low):
+        return "en"
+    return None
+
+
+def _uniq(seq):
+    out, seen = [], set()
+    for item in seq:
+        if item not in seen:
+            seen.add(item)
+            out.append(item)
+    return out
+
+
+def _expand_range(start: str, end: str) -> List[str]:
+    if start not in _DAY_ORDER or end not in _DAY_ORDER:
+        return []
+    si = _DAY_ORDER.index(start)
+    ei = _DAY_ORDER.index(end)
+    if si <= ei:
+        return _DAY_ORDER[si : ei + 1]
+    return _DAY_ORDER[si:] + _DAY_ORDER[: ei + 1]
+
+
+def _extract_days(segment: str) -> List[str]:
+    if not segment:
+        return []
+    text = segment.replace("\xa0", " ")
+    norm = text.lower().replace("—", "-").replace("–", "-")
+    days = []
+    for m in _DAY_RANGE_PATTERN.finditer(norm):
+        left = _DAY_TOKEN_MAP.get(m.group(1).lower().strip("."))
+        right = _DAY_TOKEN_MAP.get(m.group(2).lower().strip("."))
+        if left and right:
+            days.extend(_expand_range(left, right))
+    cleaned = list(norm)
+    for m in _DAY_RANGE_PATTERN.finditer(norm):
+        for i in range(m.start(), m.end()):
+            cleaned[i] = " "
+    remainder = "".join(cleaned)
+    for m in _DAY_TOKEN_PATTERN.finditer(remainder):
+        code = _DAY_TOKEN_MAP.get(m.group(1).lower().strip("."))
+        if code:
+            days.append(code)
+    if not days:
+        if re.search(r"ежеднев|daily|каждый\s+день|щодн", norm):
+            days.extend(_DAY_ORDER)
+        elif re.search(r"будн|weekdays", norm):
+            days.extend(_DAY_ORDER[:5])
+        elif re.search(r"выходн|weekend", norm):
+            days.extend(_DAY_ORDER[5:])
+    return _uniq(days)
+
+
+def _normalize_time_value(token: str, default_ampm: Optional[str] = None) -> Tuple[Optional[str], Optional[str], bool]:
+    if token is None:
+        return None, default_ampm, False
+    raw = token.strip()
+    if not raw:
+        return None, default_ampm, False
+    low = raw.lower()
+    ampm = None
+    explicit = False
+    for mark, label in (("a.m.", "am"), ("p.m.", "pm"), ("am", "am"), ("pm", "pm")):
+        if mark in low:
+            ampm = label
+            raw = re.sub(mark, "", raw, flags=re.IGNORECASE)
+            explicit = True
+            break
+    raw = raw.replace(".", ":").strip()
+    m = re.match(r"^(\d{1,2})(?::(\d{1,2}))?", raw)
+    if not m:
+        return None, ampm or default_ampm, explicit
+    hour = int(m.group(1))
+    minute = int(m.group(2)) if m.group(2) is not None else 0
+    ampm = ampm or default_ampm
+    if ampm == "am" and hour == 12:
+        hour = 0
+    elif ampm == "pm" and hour < 12:
+        hour += 12
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None, ampm, explicit
+    return f"{hour:02d}:{minute:02d}", ampm, explicit
+
+
+def _time_to_minutes(val: str) -> int:
+    h, m = val.split(":", 1)
+    return int(h) * 60 + int(m)
+
+
+def _extract_time_range(segment: str) -> Optional[Tuple[str, str]]:
+    if not segment:
+        return None
+    text = segment.replace("\xa0", " ").replace("—", "-").replace("–", "-")
+    text = re.sub(r"(?<=\d)\.(?=\d)", ":", text)
+    m = _FROM_TO_RE.search(text)
+    if m:
+        start, start_ampm, _ = _normalize_time_value(m.group(1))
+        end, _, _ = _normalize_time_value(m.group(2))
+        if start and end:
+            return start, end
+    m = _TIME_RANGE_RE.search(text)
+    if m:
+        end_norm, end_ampm, end_explicit = _normalize_time_value(m.group(2))
+        start_norm, _, start_explicit = _normalize_time_value(m.group(1), default_ampm=end_ampm)
+        if start_norm and end_norm:
+            if end_explicit and not start_explicit:
+                fallback_start, _, _ = _normalize_time_value(m.group(1))
+                if fallback_start and _time_to_minutes(start_norm) >= _time_to_minutes(end_norm) and _time_to_minutes(fallback_start) < _time_to_minutes(end_norm):
+                    start_norm = fallback_start
+            return start_norm, end_norm
+    m = _SIMPLE_RANGE_RE.search(text)
+    if m:
+        a = int(m.group(1))
+        b = int(m.group(2))
+        if 0 <= a <= 23 and 0 <= b <= 23:
+            return f"{a:02d}:00", f"{b:02d}:00"
+    return None
+
+
+def _parse_by_days(text: str) -> Tuple[List[dict], List[str]]:
+    if not text:
+        return [], []
+    chunks = _SEG_SPLIT_PATTERN.split(text)
+    by_days: List[dict] = []
+    notes: List[str] = []
+    for chunk in chunks:
+        part = chunk.strip()
+        if not part:
+            continue
+        days = _extract_days(part)
+        if not days:
+            continue
+        low = part.lower()
+        if _CLOSED_RE.search(low):
+            for day in days:
+                notes.append(f"{day}: closed")
+            continue
+        tr = _extract_time_range(part)
+        if tr:
+            start, end = tr
+            for day in days:
+                by_days.append({"day": day, "start": start, "end": end})
+    return by_days, _uniq(notes)
+
+
+def _candidate_reason(text: str) -> Optional[str]:
+    if not text:
+        return None
+    low = text.lower()
+    if _FLEXIBLE_RE.search(low):
+        return "flexible"
+    if _IS247_RE.search(low):
+        return "247"
+    if _DAY_TOKEN_PATTERN.search(low) and (
+        _TIME_RANGE_RE.search(text)
+        or _FROM_TO_RE.search(text)
+        or _SIMPLE_RANGE_RE.search(text)
+        or re.search(r"\d{1,2}:\d{2}", text)
+    ):
+        return "day-time"
+    if any(h in low for h in _WORK_SECTION_HINTS) and (
+        _TIME_RANGE_RE.search(text)
+        or _FROM_TO_RE.search(text)
+        or _SIMPLE_RANGE_RE.search(text)
+    ):
+        return "section-range"
+    if any(k in low for k in ("смен", "shift", "сутк", "вахт")):
+        sl = extract_shift_len(text)
+        if sl:
+            return "shift-length"
+    sched = extract_schedule_strict(text, sched_src=None)
+    if sched:
+        return "schedule"
+    return None
+
+
+def _collect_candidates(ctx: WorkingHoursContext) -> list[tuple[str, str]]:
+    text = (ctx.text or "").replace("\r", "\n")
+    if not text.strip():
+        return []
+    lines = [line.strip() for line in text.split("\n")]
+    candidates: List[Tuple[str, str]] = []
+    for idx, line in enumerate(lines):
+        if not line:
+            continue
+        reason = _candidate_reason(line)
+        if reason:
+            candidates.append((line, reason))
+            continue
+        low = line.lower()
+        if any(h in low for h in _WORK_SECTION_HINTS):
+            combined = line
+            for j in range(idx + 1, min(len(lines), idx + 4)):
+                nxt = lines[j]
+                if not nxt:
+                    break
+                combined = combined + " " + nxt
+                reason = _candidate_reason(combined)
+                if reason:
+                    candidates.append((combined.strip(), reason))
+                    break
+    uniq: List[Tuple[str, str]] = []
+    seen = set()
+    for raw, reason in candidates:
+        key = raw.strip()
+        if key and key not in seen:
+            seen.add(key)
+            uniq.append((raw.strip(), reason))
+    return uniq
+
+
+def _normalize_candidate(raw: str) -> Tuple[dict, Optional[str], Optional[dict], List[str], float, Optional[str]]:
+    normalized = {
+        "by_days": [],
+        "is_247": False,
+        "shift_based": None,
+    }
+    notes: List[str] = []
+    lang = _detect_lang(raw)
+    low = raw.lower()
+    schedule_hint = extract_schedule_strict(raw, sched_src=None)
+    shift_dict = None
+    conf = 0.0
+
+    if _IS247_RE.search(low):
+        normalized["is_247"] = True
+        conf = max(conf, 0.9)
+
+    by_days, day_notes = _parse_by_days(raw)
+    if by_days:
+        normalized["by_days"] = by_days
+        notes.extend(day_notes)
+        conf = max(conf, 1.0)
+
+    if schedule_hint:
+        sl = extract_shift_len(raw)
+        shift_len_val = sl.hours if sl and isinstance(sl.hours, (int, float)) else None
+        shift_dict = {"pattern": schedule_hint, "shift_length_hours": shift_len_val}
+        if shift_len_val is not None:
+            conf = max(conf, 0.6)
+        else:
+            conf = max(conf, 0.5)
+    else:
+        if any(k in low for k in ("смен", "shift", "сутк", "вахт")):
+            sl = extract_shift_len(raw)
+            if sl and isinstance(sl.hours, (int, float)):
+                shift_dict = {"pattern": None, "shift_length_hours": float(sl.hours)}
+                conf = max(conf, 0.6)
+
+    if normalized["is_247"] and not normalized["by_days"]:
+        conf = max(conf, 0.9)
+
+    if not normalized["by_days"] and not normalized["is_247"] and not shift_dict:
+        if _FLEXIBLE_RE.search(low):
+            conf = max(conf, 0.3)
+        elif conf == 0.0:
+            conf = 0.3
+
+    normalized["shift_based"] = shift_dict
+
+    return normalized, schedule_hint, shift_dict, notes, round(conf, 2), lang
+
+
+def extract_working_hours(contexts: List[WorkingHoursContext]) -> dict:
+    result = _empty_working_hours_dict()
+    logs = []
+    raw_matches: List[str] = []
+    sources: List[dict] = []
+    best = None
+    best_key = (-1.0, -1)
+    schedule_seen: List[str] = []
+
+    if not contexts:
+        result["log"] = ["no contexts provided"]
+        return result
+
+    for idx, ctx in enumerate(contexts):
+        label = ctx.label or ctx.selector or f"ctx{idx}"
+        cands = _collect_candidates(ctx)
+        if not cands:
+            logs.append(f"{label}: no working-hours triggers")
+            continue
+        for raw, reason in cands:
+            if raw not in raw_matches:
+                raw_matches.append(raw)
+            src_entry = {"selector": ctx.selector or label, "url": ctx.url}
+            if src_entry not in sources:
+                sources.append(src_entry)
+            normalized, sched, shift_dict, notes, conf, lang = _normalize_candidate(raw)
+            if sched and sched not in schedule_seen:
+                schedule_seen.append(sched)
+            logs.append(f"{label}: trigger={reason} conf={conf}")
+            key = (conf, ctx.weight or 0)
+            if best is None or key > best_key:
+                best = {
+                    "normalized": normalized,
+                    "schedule": sched,
+                    "shift": shift_dict,
+                    "notes": notes,
+                    "confidence": conf,
+                    "lang": lang,
+                }
+                best_key = key
+
+    result["raw_matches"] = raw_matches
+    result["source"] = sources
+    result["log"] = logs
+
+    if best is not None:
+        result["normalized"] = best["normalized"]
+        result["confidence"] = best["confidence"]
+        result["lang"] = best["lang"]
+        if best["notes"]:
+            result["notes"] = "; ".join(best["notes"])
+        result["schedule_hint"] = best["schedule"] or (schedule_seen[0] if schedule_seen else None)
+        if best["shift"]:
+            result["normalized"]["shift_based"] = best["shift"]
+        elif result["normalized"].get("shift_based") is None:
+            result["normalized"]["shift_based"] = None
+    else:
+        result["schedule_hint"] = schedule_seen[0] if schedule_seen else None
+
+    if result["schedule_hint"] and result["normalized"].get("shift_based") is None:
+        result["normalized"]["shift_based"] = {"pattern": result["schedule_hint"], "shift_length_hours": None}
+
+    if result["notes"] is None and not result["raw_matches"]:
+        result["notes"] = None
+
+    return result
+
 BENEFITS = ["дмс","медицинская страховка","страхование","питание","бесплатное питание","корпоративное питание",
             "форма","униформа","спецодежда","премии","бонус","бонусы","подарки","скидки","обучение",
             "проезд","оплата проезда","жилье","жильё","общежитие","развозка","транспорт","кофе","чай"]
@@ -1428,6 +1881,29 @@ def map_hh(items: List[Dict[str, Any]], pause_detail: float = 0.2) -> List[Dict[
         published = _iso_date(v.get("published_at") or det.get("published_at"))
         hour, shift = extract_comp(descr_txt)
         graph = extract_schedule_strict(descr_txt, sched_src=None)
+
+        wh_contexts: List[WorkingHoursContext] = []
+        if descr_txt:
+            wh_contexts.append(
+                WorkingHoursContext(
+                    text=descr_txt,
+                    url=url,
+                    selector="hh:description",
+                    weight=12,
+                    label="hh:description",
+                )
+            )
+        elif short.strip():
+            wh_contexts.append(
+                WorkingHoursContext(
+                    text=short,
+                    url=url,
+                    selector="hh:snippet",
+                    weight=6,
+                    label="hh:snippet",
+                )
+            )
+        working_hours = extract_working_hours(wh_contexts)
 
         sl = extract_shift_len(descr_txt)
         shift_len = None
@@ -1518,6 +1994,7 @@ def map_hh(items: List[Dict[str, Any]], pause_detail: float = 0.2) -> List[Dict[
             "gross_note": gross_note,
             "__text": f"{descr_txt} {duties or ''}",
             "__rate_text": rate_text,
+            "working_hours": working_hours,
         })
         time.sleep(pause_detail)
     return rows
@@ -1598,6 +2075,7 @@ def map_gr(rows_in):
                     "Примечание": "",
                     "gross_note": "",
                     "__text": None,
+                    "working_hours": extract_working_hours([]),
                 }
         except Exception:
             soup = None
@@ -1688,6 +2166,19 @@ def map_gr(rows_in):
         bens = pick_benefits(descr)
         exp = extract_experience(descr)
 
+        wh_contexts: List[WorkingHoursContext] = []
+        if descr:
+            wh_contexts.append(
+                WorkingHoursContext(
+                    text=descr,
+                    url=u,
+                    selector="gr:description",
+                    weight=10,
+                    label="gr:description",
+                )
+            )
+        working_hours = extract_working_hours(wh_contexts)
+
         gross_text = _gross_text_blob(
             title,
             emp,
@@ -1728,6 +2219,7 @@ def map_gr(rows_in):
             "gross_note": gross_note,
             "__text": f"{descr} {duties or ''}".strip() or None,
             "__rate_text": rate_text,
+            "working_hours": working_hours,
         }
 
     out = []
@@ -1918,6 +2410,28 @@ def map_avito(rows_in: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
         # derive
         descr = (desc or "").strip()
+        wh_contexts: List[WorkingHoursContext] = []
+        if descr:
+            wh_contexts.append(
+                WorkingHoursContext(
+                    text=descr,
+                    url=u,
+                    selector="avito:description",
+                    weight=10,
+                    label="avito:description",
+                )
+            )
+        elif prefill_text.get(u):
+            wh_contexts.append(
+                WorkingHoursContext(
+                    text=prefill_text[u],
+                    url=u,
+                    selector="avito:prefill",
+                    weight=6,
+                    label="avito:prefill",
+                )
+            )
+        working_hours = extract_working_hours(wh_contexts)
         hour, shift_sum = extract_comp(descr)
         shift_len = None
         shift_hours_val = None
@@ -1982,6 +2496,7 @@ def map_avito(rows_in: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "Примечание": gross_note,
             "gross_note": gross_note,
             "__text": f"{descr} {duties or ''}".strip() or None,
+            "working_hours": working_hours,
         }
 
     with ThreadPoolExecutor(max_workers=min(_WORKERS, 3)) as ex:
