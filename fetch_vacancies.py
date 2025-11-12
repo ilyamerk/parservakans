@@ -18,6 +18,8 @@ from urllib.parse import urlparse
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from avito_source import AvitoCollector, AvitoConfig
+
 _AVITO_RPS = 0.35  # ~1 запрос каждые ~3 сек
 _GR_RPS    = 0.50  # ~1 запрос каждые 2 сек
 
@@ -2749,6 +2751,95 @@ def gr_search(query: str, city: str, pages: int, pause: float,
 # -----------------------------------------------------------------------
 
 # =================== СВОД И ВЫВОД ===================
+def _legacy_row_from_avito_record(rec: Dict[str, Any]) -> Dict[str, Any]:
+    posted_at = rec.get("posted_at")
+    if isinstance(posted_at, datetime):
+        posted_at_str = posted_at.date().isoformat()
+    else:
+        posted_at_str = rec.get("posted_at_raw")
+
+    salary_currency = (rec.get("salary_currency") or "").upper() or None
+    salary_from = rec.get("salary_from")
+    salary_to = rec.get("salary_to")
+
+    sal_from_tr = sal_to_tr = None
+    if salary_currency in (None, "RUB"):
+        if isinstance(salary_from, (int, float)):
+            sal_from_tr = round(float(salary_from) / 1000.0, 3)
+        if isinstance(salary_to, (int, float)):
+            sal_to_tr = round(float(salary_to) / 1000.0, 3)
+
+    working_hours = rec.get("working_hours") or {}
+    normalized = working_hours.get("normalized") if isinstance(working_hours, dict) else None
+    shift_based = normalized.get("shift_based") if isinstance(normalized, dict) else None
+    shift_len_val = None
+    if isinstance(shift_based, dict):
+        shift_len_val = shift_based.get("shift_length_hours") or shift_based.get("shift_length")
+    if shift_len_val is None and isinstance(rec.get("schedule_hint"), str) and "12" in rec.get("schedule_hint"):
+        shift_len_val = 12
+
+    salary_period = rec.get("salary_period")
+    values = [float(v) for v in (salary_from, salary_to) if isinstance(v, (int, float))]
+    hour_val = None
+    shift_sum = None
+    if salary_period == "per_hour" and values:
+        hour_val = sum(values) / len(values)
+    elif salary_period == "per_shift" and values:
+        shift_sum = sum(values) / len(values)
+    elif salary_period == "per_day" and values:
+        shift_sum = sum(values) / len(values)
+
+    if hour_val is None and shift_sum and shift_len_val:
+        try:
+            hour_val = shift_sum / float(shift_len_val)
+        except ZeroDivisionError:
+            hour_val = None
+
+    if shift_sum is None and hour_val and shift_len_val:
+        shift_sum = hour_val * float(shift_len_val)
+
+    shift12 = hour_val * 12.0 if hour_val else None
+    if shift12 is None and shift_sum and shift_len_val:
+        try:
+            shift12 = shift_sum * (12.0 / float(shift_len_val))
+        except ZeroDivisionError:
+            shift12 = None
+
+    schedule = rec.get("schedule_hint")
+    if not schedule and isinstance(shift_based, dict):
+        schedule = shift_based.get("pattern")
+
+    exp_info = rec.get("experience_required") or {}
+    exp_value = exp_info.get("normalized") or exp_info.get("raw")
+
+    benefits = rec.get("benefits") or []
+    if isinstance(benefits, list):
+        benefits_str = ", ".join(benefits)
+    else:
+        benefits_str = str(benefits)
+
+    return {
+        "Должность": rec.get("title") or "Вакансия",
+        "Работодатель": rec.get("employer_name"),
+        "Дата публикации": posted_at_str,
+        "ЗП от (т.р.)": sal_from_tr,
+        "ЗП до (т.р.)": sal_to_tr,
+        "Средний совокупный доход при графике 2/2 по 12 часов": shift12,
+        "В час": hour_val,
+        "Ставка (расчётная) в час, ₽": hour_val,
+        "Длительность \nсмены": shift_len_val,
+        "Требуемый\nопыт": exp_value,
+        "Труд-во": rec.get("employment_type"),
+        "График": schedule,
+        "Частота \nвыплат": None,
+        "Льготы": benefits_str,
+        "Обязаности": rec.get("duties_raw"),
+        "working_hours": working_hours,
+        "Ссылка": rec.get("url_detail") or rec.get("url_listing"),
+        "Примечание": "",
+    }
+
+
 def to_df(rows: List[Dict[str, Any]]) -> pd.DataFrame:
     df = pd.DataFrame(rows)
     for c in TEMPLATE_COLS:
@@ -2777,6 +2868,12 @@ def main():
     ap.add_argument("--timeout", type=float, default=8.0, help="таймаут HTTP на карточку, сек")
     ap.add_argument("--avito_headful", action="store_true", help="окно браузера для Avito (решить капчу 1 раз)")
     ap.add_argument("--avito_state", default="avito_state.json", help="файл для cookies/storage state")
+    ap.add_argument("--avito_regions", default="", help="Список регионов Avito через запятую (по умолчанию город)")
+    ap.add_argument("--avito_queries", default="", help="Список поисковых запросов Avito через запятую")
+    ap.add_argument("--avito_categories", default="", help="Список категорий Avito (slug) через запятую")
+    ap.add_argument("--avito_date_range", default="", help="Ограничение по свежести Avito (например '7 дней')")
+    ap.add_argument("--avito_only_with_salary", action="store_true", help="Только объявления с зарплатой")
+    ap.add_argument("--avito_max_pages", type=int, default=None, help="Лимит страниц для Avito (если не задано, используется --pages)")
     ap.add_argument("--no_gr", action="store_true", help="не собирать Город Работ")
     ap.add_argument("--no_avito", action="store_true", help="не собирать Avito")
     ap.add_argument("--gr_headful", action="store_true", help="Город Работ: открыть окно браузера при сборе")
@@ -2810,8 +2907,40 @@ def main():
     rows_avito = []
     if not a.no_avito:
         try:
-            av_items = avito_search(a.query, a.city, a.pages, a.pause)
-            rows_avito = map_avito(av_items) if av_items else []
+            def _split_csv(value: str, fallback: List[str]) -> List[str]:
+                if value:
+                    items = [part.strip() for part in value.split(",") if part.strip()]
+                    if items:
+                        return items
+                return fallback
+
+            av_regions = _split_csv(getattr(a, "avito_regions", ""), [a.city])
+            av_queries = _split_csv(getattr(a, "avito_queries", ""), [a.query])
+            av_categories = _split_csv(getattr(a, "avito_categories", ""), [])
+            av_pages = getattr(a, "avito_max_pages", None) or a.pages
+            av_config = AvitoConfig(
+                regions=av_regions,
+                queries=av_queries,
+                categories=av_categories,
+                date_range=getattr(a, "avito_date_range", "") or None,
+                max_pages_per_feed=av_pages,
+                only_with_salary=getattr(a, "avito_only_with_salary", False),
+                qa_output_dir=EXPORT_DIR / "_avito_qa",
+            )
+            avito_collector = AvitoCollector(config=av_config)
+            avito_records = avito_collector.collect()
+            rows_avito = [_legacy_row_from_avito_record(r) for r in avito_records]
+
+            # сохранить полные данные в JSON для дальнейшей выгрузки/QA
+            try:
+                out_path = EXPORT_DIR / "avito_records.json"
+                payload = [
+                    {k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in record.items()}
+                    for record in avito_records
+                ]
+                out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            except Exception:
+                pass
         except Exception as e:
             print(f"[Avito] пропущен: {e}")
     else:
