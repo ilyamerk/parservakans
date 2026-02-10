@@ -2852,6 +2852,15 @@ def to_df(rows: List[Dict[str, Any]]) -> pd.DataFrame:
     df = df.drop_duplicates(subset=["Должность","Работодатель"], keep="first")
     return df
 
+
+def _resolve_export_paths(out_csv: str | Path) -> Tuple[Path, Path]:
+    """Return independent output paths for CSV and XLSX exports."""
+
+    out_path = Path(out_csv)
+    if out_path.suffix.lower() == ".xlsx":
+        return out_path.with_suffix(".csv"), out_path
+    return out_path, out_path.with_name(f"{out_path.stem}_view.xlsx")
+
 def main():
     ap = argparse.ArgumentParser(description="Парсер вакансий: hh.ru + gorodrabot.ru + avito (с fallback на Playwright)")
     ap.add_argument("--query", required=True)
@@ -2975,11 +2984,13 @@ def main():
             .str.replace(r"^https?://m\.avito\.ru", "https://www.avito.ru", regex=True)
         )
 
-    # CSV (для пайплайна)
-    df.to_csv(a.out_csv, index=False, encoding="utf-8-sig")
-    print(f"Wrote {len(df)} rows -> {a.out_csv}")
+    csv_path, xlsx_path = _resolve_export_paths(a.out_csv)
 
-    rate_path = Path(str(a.out_csv) + ".rates.json")
+    # CSV (для пайплайна)
+    df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    print(f"Wrote {len(df)} rows -> {csv_path}")
+
+    rate_path = Path(str(csv_path) + ".rates.json")
     try:
         with open(rate_path, "w", encoding="utf-8") as f:
             json.dump({"items": rate_rows}, f, ensure_ascii=False, indent=2)
@@ -2988,11 +2999,9 @@ def main():
         print(f"Failed to write rate JSON: {e}")
 
     # XLSX для просмотра (без \n в заголовках)
-    xlsx_path = a.out_csv if str(a.out_csv).lower().endswith(".xlsx") else str(a.out_csv).rsplit(".", 1)[0] + "_view.xlsx"
     df_x = df.rename(columns=lambda c: c.replace("\n", " "))
     df_x.to_excel(xlsx_path, index=False)
     print(f"Wrote {len(df_x)} rows -> {xlsx_path}")
 
 if __name__ == "__main__":
     main()
-
