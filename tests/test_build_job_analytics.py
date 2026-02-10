@@ -27,3 +27,14 @@ def test_write_excel_creates_rates_sheet(tmp_path):
     rates_df = pd.read_excel(out_path, sheet_name=RATES_SHEET_BASE)
     assert list(rates_df.columns) == ["Ставка в час", "Ставка за смену", "Ссылка"]
     assert not rates_df.empty
+
+
+def test_write_excel_strips_illegal_xml_control_chars(tmp_path):
+    bad_text = "Поварна смену"
+    df = pd.DataFrame([{"Должность": bad_text, "Ссылка": "https://example.com"}])
+
+    out_path = tmp_path / "illegal_chars.xlsx"
+    write_excel(df, out_path)
+
+    restored = pd.read_excel(out_path, sheet_name="Данные")
+    assert restored.loc[0, "Должность"] == "Поварна смену"

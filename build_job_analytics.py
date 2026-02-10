@@ -13,7 +13,25 @@ LINK_DIR.mkdir(parents=True, exist_ok=True)
 RATES_SHEET_BASE = "Ставки (час–смена)"
 
 INVALID_SHEET_CHARS_RE = re.compile(r"[\\/\*\?\:\[\]']")
+ILLEGAL_XML_CHARS_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]")
 
+
+
+
+def sanitize_excel_strings(df: pd.DataFrame) -> pd.DataFrame:
+    """Удаляет управляющие символы, которые ломают XML внутри XLSX."""
+    out = df.copy()
+
+    def _sanitize_value(value):
+        if isinstance(value, str):
+            return ILLEGAL_XML_CHARS_RE.sub("", value)
+        return value
+
+    out.columns = [ILLEGAL_XML_CHARS_RE.sub("", str(col)) for col in out.columns]
+    object_cols = out.select_dtypes(include=["object", "string"]).columns
+    for col in object_cols:
+        out[col] = out[col].map(_sanitize_value)
+    return out
 
 def sanitize_sheet_name(name: str, fallback: str = "Лист") -> str:
     s = (name or "").strip()
@@ -162,6 +180,7 @@ def compute_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def write_excel(df: pd.DataFrame, path: Path, rates: list[dict] | None = None):
+    df = sanitize_excel_strings(df)
     # 1) Нормализуем колонку со ссылками заранее (если есть)
     if "Ссылка" in df.columns:
         try:
