@@ -1826,10 +1826,19 @@ def _iso_date(s: Optional[str]) -> Optional[str]:
     except Exception:
         return s.split("T",1)[0]
 
-def hh_search(query: str, area: int, pages: int, per_page: int, pause: float, search_in: str) -> List[Dict[str, Any]]:
+def hh_search(
+    query: str,
+    area: int,
+    pages: int,
+    per_page: int,
+    pause: float,
+    search_in: str,
+    start_page: int = 0,
+) -> List[Dict[str, Any]]:
     sess = _get_sess()
     items = []
-    for page in range(pages):
+    for offset in range(pages):
+        page = start_page + offset
         p = {"text": query, "area": area, "page": page, "per_page": per_page, "only_with_salary": "false"}
         if search_in in ("name","description","company_name","everything"):
             p["search_field"] = search_in
@@ -2853,6 +2862,32 @@ def to_df(rows: List[Dict[str, Any]]) -> pd.DataFrame:
     return df
 
 
+def _build_export_df(
+    rows: List[Dict[str, Any]],
+    no_filter: bool,
+    inc_re,
+    exc_re,
+) -> Tuple[pd.DataFrame, list[dict]]:
+    filtered_rows = rows
+    if not no_filter:
+        filtered_rows = [r for r in rows if keep_by_title(str(r.get("Должность", "")), inc_re, exc_re)]
+
+    rate_rows = collect_rate_rows(filtered_rows)
+    rows_main = filter_rows_without_shift_rates(filtered_rows, rate_rows)
+    df = to_df(rows_main)
+
+    # Чистка ссылок перед экспортом (www.www и query)
+    if "Ссылка" in df.columns:
+        df["Ссылка"] = (
+            df["Ссылка"].astype(str)
+            .str.replace(r"^https?://(?:www\.){2,}", "https://www.", regex=True)
+            .str.replace(r"\?.*$", "", regex=True)
+            .str.replace(r"^https?://avito\.ru", "https://www.avito.ru", regex=True)
+            .str.replace(r"^https?://m\.avito\.ru", "https://www.avito.ru", regex=True)
+        )
+    return df, rate_rows
+
+
 def _resolve_export_paths(out_csv: str | Path) -> Tuple[Path, Path]:
     """Return independent output paths for CSV and XLSX exports."""
 
@@ -2964,25 +2999,40 @@ def main():
         bydom = tmp["Ссылка"].fillna("").str.extract(r"https?://([^/]+)/", expand=False).value_counts().head(5).to_dict()
         print("By domain:", bydom)
 
-    # Фильтр по названию (если не отключен)
-    if not a.no_filter:
-        rows = [r for r in rows if keep_by_title(str(r.get("Должность", "")), INC_RE, EXC_RE)]
-    else:
+    if a.no_filter:
         print("Фильтр по роли отключен (--no_filter).")
 
-    rate_rows = collect_rate_rows(rows)
-    rows_main = filter_rows_without_shift_rates(rows, rate_rows)
-    df = to_df(rows_main)
+    requested_count = max(1, int(a.pages) * int(a.per_page))
+    df, rate_rows = _build_export_df(rows, a.no_filter, INC_RE, EXC_RE)
 
-    # Чистка ссылок перед экспортом (www.www и query)
-    if "Ссылка" in df.columns:
-        df["Ссылка"] = (
-            df["Ссылка"].astype(str)
-            .str.replace(r"^https?://(?:www\.){2,}", "https://www.", regex=True)
-            .str.replace(r"\?.*$", "", regex=True)
-            .str.replace(r"^https?://avito\.ru", "https://www.avito.ru", regex=True)
-            .str.replace(r"^https?://m\.avito\.ru", "https://www.avito.ru", regex=True)
-        )
+    if len(df) < requested_count:
+        print(f"[HH] добираю вакансии до {requested_count}: сейчас {len(df)}")
+        hh_page_cursor = int(a.pages)
+        max_extra_pages = max(10, int(a.pages) * 5)
+        for _ in range(max_extra_pages):
+            extra_items = hh_search(
+                a.query,
+                a.area,
+                pages=1,
+                per_page=a.per_page,
+                pause=a.pause,
+                search_in=a.search_in,
+                start_page=hh_page_cursor,
+            )
+            hh_page_cursor += 1
+            if not extra_items:
+                break
+
+            rows.extend(map_hh(extra_items))
+            df, rate_rows = _build_export_df(rows, a.no_filter, INC_RE, EXC_RE)
+            if len(df) >= requested_count:
+                break
+
+            if len(extra_items) < a.per_page:
+                break
+
+    if len(df) > requested_count:
+        df = df.head(requested_count).copy()
 
     csv_path, xlsx_path = _resolve_export_paths(a.out_csv)
 
