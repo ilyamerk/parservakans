@@ -1,6 +1,23 @@
 import pandas as pd
+import numpy as np
 
-from build_job_analytics import write_excel, RATES_SHEET_BASE
+from build_job_analytics import compute_metrics, write_excel, RATES_SHEET_BASE
+
+
+def test_compute_metrics_sets_dash_for_missing_shift_length():
+    df = pd.DataFrame(
+        [
+            {
+                "В час": 350.0,
+                "Длительность смены": np.nan,
+                "Средний совокупный доход при графике 2/2 по 12 часов": np.nan,
+            }
+        ]
+    )
+
+    result = compute_metrics(df)
+
+    assert result.loc[0, "Длительность смены"] == "-"
 
 
 def test_write_excel_creates_rates_sheet(tmp_path):
