@@ -28,3 +28,37 @@ def test_extract_shift_len_prefers_shift_over_break():
 def test_extract_shift_len_ignores_experience_range():
     text = "Опыт работы от 1 до 3 лет"
     assert extract_shift_len(text) is None
+
+
+def test_legacy_row_does_not_default_shift_length_to_12_hours():
+    from fetch_vacancies import _legacy_row_from_avito_record
+
+    row = _legacy_row_from_avito_record(
+        {
+            "title": "Оператор",
+            "salary_period": "per_shift",
+            "salary_from": 3000,
+            "salary_to": 3000,
+            "schedule_hint": "2/2",
+            "working_hours": {"normalized": {"shift_based": {"pattern": "2/2"}}},
+        }
+    )
+
+    assert row["Длительность \nсмены"] is None
+
+
+def test_legacy_row_extracts_shift_length_from_schedule_hint_text():
+    from fetch_vacancies import _legacy_row_from_avito_record
+
+    row = _legacy_row_from_avito_record(
+        {
+            "title": "Оператор",
+            "salary_period": "per_shift",
+            "salary_from": 3000,
+            "salary_to": 3000,
+            "schedule_hint": "2/2 по 10 часов",
+            "working_hours": {"normalized": {"shift_based": {"pattern": "2/2"}}},
+        }
+    )
+
+    assert row["Длительность \nсмены"] == pytest.approx(10.0)
