@@ -2784,8 +2784,10 @@ def _legacy_row_from_avito_record(rec: Dict[str, Any]) -> Dict[str, Any]:
     shift_len_val = None
     if isinstance(shift_based, dict):
         shift_len_val = shift_based.get("shift_length_hours") or shift_based.get("shift_length")
-    if shift_len_val is None and isinstance(rec.get("schedule_hint"), str) and "12" in rec.get("schedule_hint"):
-        shift_len_val = 12
+    if shift_len_val is None and isinstance(rec.get("schedule_hint"), str):
+        shift_len = extract_shift_len(rec.get("schedule_hint") or "")
+        if shift_len and isinstance(shift_len.hours, (int, float)):
+            shift_len_val = float(shift_len.hours)
 
     salary_period = rec.get("salary_period")
     values = [float(v) for v in (salary_from, salary_to) if isinstance(v, (int, float))]
