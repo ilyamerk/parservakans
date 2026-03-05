@@ -97,6 +97,16 @@ EXPECTED_COLS = [
     "Требуемый опыт","Труд-во","График","Частота выплат","Льготы","Обязаности","Ссылка","Примечание"
 ]
 
+SCHEDULE_SHIFTS_PER_MONTH = {
+    "5/2": 22.0,
+    "2/2": 15.0,
+    "3/3": 15.0,
+    "4/3": 17.5,
+    "6/1": 26.0,
+    "1/3": 7.5,
+    "7/0": 30.0,
+}
+
 # ---- Helpers ----
 def load_any(path: Path) -> pd.DataFrame:
     if path.suffix.lower() in [".xlsx",".xls"]:
@@ -157,15 +167,37 @@ def coerce_numbers(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def compute_metrics(df: pd.DataFrame) -> pd.DataFrame:
-    # 1) Досчитать "В час" из "за 12 часов"
-    mask_no_hour = df["В час"].isna() & df["Средний совокупный доход при графике 2/2 по 12 часов"].notna()
-    df.loc[mask_no_hour, "В час"] = df.loc[mask_no_hour, "Средний совокупный доход при графике 2/2 по 12 часов"] / 12.0
+    # 1) Если ставка в час отсутствует, считаем только по формуле:
+    #    (ЗП от / (Количество смен * Длительность смены)) * 1000
+    #    где ЗП от в тысячах рублей.
+    schedule_series = df.get("График", pd.Series([""] * len(df), index=df.index)).fillna("").astype(str).str.strip()
+    shifts_per_month = schedule_series.map(lambda s: SCHEDULE_SHIFTS_PER_MONTH.get(s, 22.0))
 
-    # 2) Досчитать "за 12 часов" из "В час"
-    mask_no_12h = df["Средний совокупный доход при графике 2/2 по 12 часов"].isna() & df["В час"].notna()
-    df.loc[mask_no_12h, "Средний совокупный доход при графике 2/2 по 12 часов"] = df.loc[mask_no_12h, "В час"] * 12.0
+    hour_series = df.get("В час", pd.Series(np.nan, index=df.index))
+    salary_from_series = df.get("ЗП от (т.р.)", pd.Series(np.nan, index=df.index))
+    shift_length_series = df.get("Длительность смены", pd.Series(np.nan, index=df.index))
 
-    # 3) Если "Длительность смены" пусто — оставляем прочерк, а не подставляем 12
+    mask_no_hour = (
+        hour_series.isna()
+        & salary_from_series.notna()
+        & shift_length_series.notna()
+        & (shift_length_series > 0)
+    )
+    df.loc[mask_no_hour, "В час"] = (
+        salary_from_series[mask_no_hour]
+        * 1000.0
+        / (shifts_per_month[mask_no_hour] * shift_length_series[mask_no_hour])
+    )
+
+    # 2) Рассчитываем "за 12 часов" только если "В час" определено.
+    hour_series = df.get("В час", pd.Series(np.nan, index=df.index))
+    df["Средний совокупный доход при графике 2/2 по 12 часов"] = np.where(
+        hour_series.notna(),
+        hour_series * 12.0,
+        np.nan,
+    )
+
+    # 3) Если "Длительность смены" пусто — оставляем прочерк.
     if "Длительность смены" in df.columns:
         df["Длительность смены"] = df["Длительность смены"].astype(object)
         mask_len = df["Длительность смены"].isna()
