@@ -7,34 +7,45 @@
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
-  <main>
-    <h1>Парсер вакансий</h1>
-    <form action="/run" method="post">
-      <label>Запрос <input name="query" value="Бариста" /></label>
-      <label>Город <input name="city" value="Москва" /></label>
-      <label>HH area <input name="area" type="number" value="1" /></label>
-      <label>Страницы <input name="pages" type="number" value="3" /></label>
-      <label>На страницу <input name="per_page" type="number" value="50" /></label>
-      <label>Пауза <input name="pause" type="number" step="0.1" value="0.9" /></label>
-      <label>Поиск в <input name="search_in" value="name" /></label>
-      <label>Workers <input name="workers" type="number" value="8" /></label>
-      <label>Timeout <input name="timeout" type="number" step="0.1" value="8.0" /></label>
-      <label>Роль-фильтр <input name="role" value="" /></label>
-      <label class="inline"><input type="checkbox" name="no_filter" value="true" /> Без фильтра по роли</label>
-      <button type="submit">Запустить парсер</button>
-    </form>
+  <div class="bg-glow glow-left" aria-hidden="true"></div>
+  <div class="bg-glow glow-right" aria-hidden="true"></div>
+
+  <main class="app-shell">
+    <header class="hero">
+      <p class="badge">Parser Vakans · Automation Suite</p>
+      <h1>Парсер вакансий</h1>
+      <p class="subtitle">Собирай вакансии в несколько кликов, выгружай отчёты и анализируй рынок быстрее.</p>
+    </header>
+
+    <section class="panel form-panel">
+      <h2>Параметры запуска</h2>
+      <form action="/run" method="post">
+        <label>Запрос <input name="query" value="Бариста" /></label>
+        <label>Город <input name="city" value="Москва" /></label>
+        <label>HH area <input name="area" type="number" value="1" /></label>
+        <label>Страницы <input name="pages" type="number" value="3" /></label>
+        <label>На страницу <input name="per_page" type="number" value="50" /></label>
+        <label>Пауза <input name="pause" type="number" step="0.1" value="0.9" /></label>
+        <label>Поиск в <input name="search_in" value="name" /></label>
+        <label>Workers <input name="workers" type="number" value="8" /></label>
+        <label>Timeout <input name="timeout" type="number" step="0.1" value="8.0" /></label>
+        <label>Роль-фильтр <input name="role" value="" /></label>
+        <label class="inline"><input type="checkbox" name="no_filter" value="true" /> Без фильтра по роли</label>
+        <button type="submit">Запустить парсер</button>
+      </form>
+    </section>
 
     {% if error %}
-      <section class="error">
+      <section class="panel error">
         <h2>Ошибка</h2>
         <pre>{{ error }}</pre>
       </section>
     {% endif %}
 
     {% if result %}
-      <section>
+      <section class="panel result-panel">
         <h2>Результат</h2>
-        <p>Run ID: <strong>{{ result.run_id }}</strong>, строк: <strong>{{ result.row_count }}</strong></p>
+        <p class="run-meta">Run ID: <strong>{{ result.run_id }}</strong> · строк: <strong>{{ result.row_count }}</strong></p>
         <div class="downloads">
           <a href="/download/{{ result.run_id }}/csv">Скачать CSV</a>
           <a href="/download/{{ result.run_id }}/xlsx">Скачать XLSX</a>
@@ -43,7 +54,7 @@
       </section>
 
       {% if rows %}
-      <section>
+      <section class="panel">
         <h3>Предпросмотр (первые {{ rows|length }} строк)</h3>
         <div class="table-wrap">
           <table>
