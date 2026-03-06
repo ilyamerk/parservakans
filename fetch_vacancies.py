@@ -1063,13 +1063,24 @@ SHIFTS_PER_MONTH_2X2 = 15.0
 _MONTHLY_THRESHOLD_TR = 15.0  # >=15 т.р. считаем месячной ставкой
 
 SCHEDULE_SHIFTS_PER_MONTH = {
-    "5/2": 22.0,
+    "5/2": 21.0,
     "2/2": 15.0,
     "3/3": 15.0,
-    "4/3": 17.5,
-    "6/1": 26.0,
-    "1/3": 7.5,
+    "4/3": 13.0,
+    "6/1": 22.0,
+    "1/3": 8.0,
+    "1/1": 15.0,
     "7/0": 30.0,
+}
+
+SCHEDULE_DEFAULT_HOURS = {
+    "5/2": 8.0,
+    "2/2": 12.0,
+    "3/3": 12.0,
+    "1/3": 12.0,
+    "1/1": 12.0,
+    "6/1": 8.0,
+    "4/3": 12.0,
 }
 
 
@@ -1122,7 +1133,7 @@ def derive_hour_shift_from_salary(
     shift_val = round(hour * eff_hours, 2)
     return hour, shift_val, eff_hours
 
-NUM_WORD = {"сутки":1,"день":1,"один":1,"одна":1,"два":2,"две":2,"три":3,"четыре":4,"пять":5,"шесть":6,"семь":7}
+NUM_WORD = {"сутки":1,"день":1,"один":1,"одна":1,"двое":2,"два":2,"две":2,"трое":3,"три":3,"четверо":4,"четыре":4,"пять":5,"шесть":6,"семь":7}
 SCHED_NUM_RE = re.compile(r"\b([1-9]\d?)\s*[/\-–xх×]\s*([1-9]\d?)\b", re.I)
 def _words_pair(t: str) -> Optional[str]:
     m = re.search(rf"\b({'|'.join(NUM_WORD)})\s+через\s+({'|'.join(NUM_WORD)})\b", t, re.I)
@@ -1134,7 +1145,16 @@ def _words_pair(t: str) -> Optional[str]:
 _SCHEDULE_NAME_MAP = {
     "полный день": "5/2",
     "полная занятость": "5/2",
+    "пятидневка": "5/2",
+    "пятидневная рабочая неделя": "5/2",
 }
+
+# Regex-паттерны для распознавания графика из описания вакансии
+_SCHEDULE_TEXT_PATTERNS = [
+    (re.compile(r"пятидневк", re.I), "5/2"),
+    (re.compile(r"день\s+через\s+день", re.I), "1/1"),
+    (re.compile(r"сутки\s*[/\\]\s*тро[её]", re.I), "1/3"),
+]
 
 def extract_schedule_strict(text: str, sched_src: Optional[str]=None) -> Optional[str]:
     t = (text or "") + " " + (sched_src or "")
@@ -1144,6 +1164,9 @@ def extract_schedule_strict(text: str, sched_src: Optional[str]=None) -> Optiona
         vals.append(f"{int(m.group(1))}/{int(m.group(2))}")
     wp = _words_pair(t)
     if wp: vals.append(wp)
+    # "3 через 3", "2 через 2" — цифры через "через"
+    for m in re.finditer(r"\b([1-9]\d?)\s+через\s+([1-9]\d?)\b", t, re.I):
+        vals.append(f"{int(m.group(1))}/{int(m.group(2))}")
     for m in re.finditer(r"\bвахт\w*\s*([1-9]\d?)\s*[/\-–xх×]\s*([1-9]\d?)\b", t, re.I):
         vals.append(f"{int(m.group(1))}/{int(m.group(2))}")
     out, seen = [], set()
@@ -1152,6 +1175,10 @@ def extract_schedule_strict(text: str, sched_src: Optional[str]=None) -> Optiona
             seen.add(v); out.append(v)
     if out:
         return ", ".join(out)
+    # Fallback: regex text patterns (пятидневка, день через день, сутки/трое)
+    for pat, sched_val in _SCHEDULE_TEXT_PATTERNS:
+        if pat.search(t):
+            return sched_val
     # Fallback: map well-known HH schedule names when no numeric pattern found
     if sched_src:
         mapped = _SCHEDULE_NAME_MAP.get(sched_src.lower().strip())
@@ -1949,6 +1976,26 @@ def hh_details(vac_id: str) -> dict:
         print(f"[HH] details fail {vac_id}: {e.__class__.__name__}")
     return {}
 
+def _humanize_notes(graph: Optional[str], shift_len, gross_note: str = "") -> str:
+    """Формирует человекочитаемое примечание вместо технических сообщений."""
+    parts = []
+    if gross_note:
+        parts.append(gross_note)
+    if not graph:
+        parts.append("График не распознан")
+    if shift_len is None:
+        parts.append("Длительность смены не указана")
+    return "; ".join(parts)
+
+
+def _default_shift_hours_for_schedule(graph: Optional[str]) -> Optional[float]:
+    """Возвращает дефолтную длительность смены по графику."""
+    if not graph:
+        return None
+    sched_first = graph.split(",")[0].strip()
+    return SCHEDULE_DEFAULT_HOURS.get(sched_first)
+
+
 def map_hh(items: List[Dict[str, Any]], pause_detail: float = 0.2) -> List[Dict[str, Any]]:
     rows = []
     for v in items:
@@ -2053,6 +2100,10 @@ def map_hh(items: List[Dict[str, Any]], pause_detail: float = 0.2) -> List[Dict[
         hour, hourly_method, hourly_notes = compute_hourly_rate(hour, shift, shift_info)
         shift_len = float(shift_info.hours) if (shift_info and isinstance(shift_info.hours, (int, float))) else None
 
+        # Default shift duration by schedule when not found in text
+        if shift_len is None and graph:
+            shift_len = _default_shift_hours_for_schedule(graph)
+
         # Fallback: derive hourly rate from monthly salary when no explicit rate found
         if hour is None and (sal_from_tr or sal_to_tr):
             hour_derived, shift12_derived, _ = derive_hour_shift_from_salary(
@@ -2120,7 +2171,7 @@ def map_hh(items: List[Dict[str, Any]], pause_detail: float = 0.2) -> List[Dict[
             "Льготы": bens,
             "Обязаности": duties,
             "Ссылка": url,
-            "Примечание": gross_note,
+            "Примечание": _humanize_notes(graph, shift_len, gross_note),
             "gross_note": gross_note,
             "__text": f"{descr_txt} {duties or ''}",
             "__rate_text": rate_text,
@@ -2202,7 +2253,7 @@ def map_gr(rows_in):
                     "Льготы": None,
                     "Обязаности": None,
                     "Ссылка": u,
-                    "Примечание": "",
+                    "Примечание": _humanize_notes(None, None),
                     "gross_note": "",
                     "__text": None,
                     "working_hours": extract_working_hours([]),
@@ -2262,18 +2313,30 @@ def map_gr(rows_in):
 
         descr = (desc or "").strip()
         hour, shift_sum = extract_comp(descr)
-        shift_len = None
-        shift_hours_val = None
         shift_info = extract_shift_len(descr)
+        graph = extract_schedule_strict(descr, sched_src=None)
         hour, hourly_method, hourly_notes = compute_hourly_rate(hour, shift_sum, shift_info)
         shift_len = float(shift_info.hours) if (shift_info and isinstance(shift_info.hours, (int, float))) else None
+
+        # Default shift duration by schedule when not found in text
+        if shift_len is None and graph:
+            shift_len = _default_shift_hours_for_schedule(graph)
+
+        # Fallback: derive hourly rate from monthly salary when no explicit rate found
+        if hour is None and (sal_from or sal_to):
+            hour_derived, _, _ = derive_hour_shift_from_salary(
+                sal_from, sal_to, shift_len, schedule=graph
+            )
+            if hour_derived:
+                hour = hour_derived
+                hourly_method = "derived:salary_based"
+                hourly_notes.append(f"derived from monthly salary (schedule={graph}, shift={shift_len}h)")
+
         shift12_out = shift_sum if (shift_sum and shift_len == 12.0) else (hour * 12.0 if hour else None)
         parsing_notes = []
         if shift_info and shift_info.notes:
             parsing_notes.extend(shift_info.notes)
         parsing_notes.extend(hourly_notes)
-
-        graph = extract_schedule_strict(descr, sched_src=None)
         pay = extract_pay_frequency(descr)
         employ = extract_employment_type(descr)
         duties = extract_responsibilities(desc or "", fallback=(descr[:3000] if descr else None))
@@ -2335,7 +2398,7 @@ def map_gr(rows_in):
             "Льготы": bens,
             "Обязаности": duties,
             "Ссылка": u,
-            "Примечание": gross_note,
+            "Примечание": _humanize_notes(graph, shift_len, gross_note),
             "gross_note": gross_note,
             "__text": f"{descr} {duties or ''}".strip() or None,
             "__rate_text": rate_text,
@@ -2905,16 +2968,30 @@ def _legacy_row_from_avito_record(rec: Dict[str, Any]) -> Dict[str, Any]:
     )
     hour_val, hourly_method, hourly_notes = compute_hourly_rate(explicit_hour, shift_sum, shift_info)
 
+    schedule = rec.get("schedule_hint")
+    if not schedule and isinstance(shift_based, dict):
+        schedule = shift_based.get("pattern")
+
+    # Default shift duration by schedule when not found
+    if shift_len_val is None and schedule:
+        shift_len_val = _default_shift_hours_for_schedule(schedule)
+
+    # Fallback: derive hourly rate from monthly salary when no explicit rate found
+    if hour_val is None and (sal_from_tr or sal_to_tr):
+        hour_derived, _, _ = derive_hour_shift_from_salary(
+            sal_from_tr, sal_to_tr, shift_len_val, schedule=schedule
+        )
+        if hour_derived:
+            hour_val = hour_derived
+            hourly_method = "derived:salary_based"
+            hourly_notes.append(f"derived from monthly salary (schedule={schedule}, shift={shift_len_val}h)")
+
     shift12 = hour_val * 12.0 if hour_val else None
     if shift12 is None and shift_sum and shift_len_val:
         try:
             shift12 = shift_sum * (12.0 / float(shift_len_val))
         except ZeroDivisionError:
             shift12 = None
-
-    schedule = rec.get("schedule_hint")
-    if not schedule and isinstance(shift_based, dict):
-        schedule = shift_based.get("pattern")
 
     exp_info = rec.get("experience_required") or {}
     exp_value = exp_info.get("normalized") or exp_info.get("raw")
@@ -2949,7 +3026,7 @@ def _legacy_row_from_avito_record(rec: Dict[str, Any]) -> Dict[str, Any]:
         "Обязаности": rec.get("duties_raw"),
         "working_hours": working_hours,
         "Ссылка": rec.get("url_detail") or rec.get("url_listing"),
-        "Примечание": "",
+        "Примечание": _humanize_notes(schedule, shift_len_val),
     }
 
 
