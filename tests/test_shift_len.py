@@ -144,20 +144,9 @@ def test_extract_benefits_no_duplicates():
     assert extract_benefits(text) == ["ДМС", "питание", "скидки сотрудникам"]
 
 
-def test_compute_hourly_rate_from_monthly_salary_supported_schedule():
+def test_compute_hourly_rate_does_not_use_monthly_salary_without_validated_model():
     sl = ShiftLength(hours=12.0)
-    hour, method, _ = compute_hourly_rate(None, None, sl, monthly_salary=100000, schedule="2/2")
-    assert hour == pytest.approx(555.56)
-    assert method.startswith("calculated")
-
-
-def test_compute_hourly_rate_from_monthly_salary_5_2():
-    sl = ShiftLength(hours=12.0)
-    hour, _, _ = compute_hourly_rate(None, None, sl, monthly_salary=100000, schedule="5/2")
-    assert hour == pytest.approx(378.79)
-
-
-def test_compute_hourly_rate_from_monthly_salary_3_3():
-    sl = ShiftLength(hours=12.0)
-    hour, _, _ = compute_hourly_rate(None, None, sl, monthly_salary=100000, schedule="3/3")
-    assert hour == pytest.approx(555.56)
+    hour, method, notes = compute_hourly_rate(None, None, sl, monthly_salary=100000, schedule="2/2")
+    assert hour is None
+    assert method == "unresolved:monthly_salary_requires_validated_model"
+    assert notes
