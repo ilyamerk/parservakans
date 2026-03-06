@@ -137,6 +137,22 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     df = df.rename(columns=mapping)
 
+    # после переименования могут появиться дубли (например, несколько колонок,
+    # которые все нормализовались в "Ссылка"). Оставляем первый непустой вариант.
+    if df.columns.duplicated().any():
+        dedup_data: dict[str, pd.Series] = {}
+        for col in df.columns:
+            series = df[col]
+            if isinstance(series, pd.DataFrame):
+                merged = series.bfill(axis=1).iloc[:, 0]
+            else:
+                merged = series
+            if col in dedup_data:
+                dedup_data[col] = dedup_data[col].combine_first(merged)
+            else:
+                dedup_data[col] = merged
+        df = pd.DataFrame(dedup_data)
+
     # добавить отсутствующие столбцы
     for col in EXPECTED_COLS:
         if col not in df.columns:
