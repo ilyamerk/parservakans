@@ -33,6 +33,17 @@ DEFAULT_HTTP_CONFIG = HHHTTPConfig()
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
+SCHEDULE_SHIFTS_PER_MONTH = {
+    "5/2": 22.0,
+    "2/2": 15.0,
+    "3/3": 15.0,
+    "4/3": 17.5,
+    "6/1": 26.0,
+    "1/3": 7.5,
+    "7/0": 30.0,
+}
+
+
 @dataclasses.dataclass
 class WorkingHoursContext:
     text: str
@@ -368,37 +379,60 @@ def extract_shift_len(text: str, structured_text: str = "") -> ShiftLength:
 def extract_employment_type(text: str, employment_name: str = "") -> tuple[Optional[str], list[str]]:
     combined = " ".join(filter(None, [text, employment_name])).lower()
     notes: list[str] = []
-    tk = bool(
-        re.search(
-            r"(по\s*тк\s*рф|по\s*тк\b|трудов(?:ой|ого)?\s*договор|официальн\w*\s*(?:оформлен|трудоустрой))",
-            combined,
-        )
-    )
-    gph = bool(
-        re.search(
-            r"(\bгпх\b|договор\s*гпх|гражданско-?правов(?:ой|ого)?\s*договор|самозанят|подряд)",
-            combined,
-        )
-    )
-    if tk and gph:
-        notes.append("both ТК and ГПХ found")
-        return "ТК / ГПХ", notes
-    if tk:
-        return "ТК", notes
-    if gph:
-        return "ГПХ", notes
-    return None, ["employment type unresolved"]
+    tokens: list[str] = []
+
+    patterns = [
+        (r"(полная\s*занятость|полный\s*рабочий\s*день|full[-\s]*time)", "полная занятость"),
+        (r"(частичн\w*\s*занятость|неполный\s*рабочий\s*день|part[-\s]*time)", "частичная занятость"),
+        (r"(проектн\w*\s*работ|проектная\s*занятость|project[-\s]*work)", "проектная работа"),
+        (r"(стажировк\w*|internship)", "стажировка"),
+        (r"(по\s*тк\s*рф|по\s*тк\b|трудов(?:ой|ого)?\s*договор|официальн\w*\s*(?:оформлен|трудоустрой))", "ТК РФ"),
+        (r"(\bгпх\b|договор\s*гпх|гражданско-?правов(?:ой|ого)?\s*договор)", "ГПХ"),
+        (r"(самозанят\w*)", "самозанятость"),
+        (r"(\bип\b|индивидуальн\w*\s*предпринимател)", "ИП"),
+    ]
+
+    for pattern, label in patterns:
+        if re.search(pattern, combined):
+            tokens.append(label)
+
+    if not tokens:
+        return None, ["employment type unresolved"]
+
+    return " / ".join(dict.fromkeys(tokens)), notes
+
+
+def _normalize_schedule_token(first: int, second: int) -> str:
+    return f"{first}/{second}"
+
+
+def _extract_days_per_month_from_text(text: str) -> Optional[float]:
+    t = (text or "").lower()
+    m = re.search(r"(\d{1,2})\s*(?:рабоч[иех]{2}|раб\.?\s*дн(?:ей|я)?|дн(?:ей|я))\s*в\s*месяц", t)
+    if not m:
+        return None
+    val = float(m.group(1))
+    if 1 <= val <= 31:
+        return val
+    return None
 
 
 def extract_schedule(text: str, schedule_name: str = "") -> tuple[Optional[str], str]:
     combined = " ".join(filter(None, [text, schedule_name])).lower()
     m = re.search(r"\b(\d{1,2})\s*/\s*(\d{1,2})\b", combined)
     if m:
-        return f"{int(m.group(1))}/{int(m.group(2))}", "description_or_structured:pattern"
+        return _normalize_schedule_token(int(m.group(1)), int(m.group(2))), "description_or_structured:pattern"
+    m = re.search(r"\b(\d{1,2})\s*[/-]\s*дневк", combined)
+    if m:
+        return _normalize_schedule_token(int(m.group(1)), 2), "description_or_structured:pattern"
     if "сменн" in combined:
         return "сменный", "description_or_structured:keyword"
     if "гибк" in combined:
         return "гибкий", "description_or_structured:keyword"
+    if re.search(r"(удал[её]н|дистанционн|remote)", combined):
+        return "удалённо", "description_or_structured:keyword"
+    if re.search(r"(вахт\w*)", combined):
+        return "вахта", "description_or_structured:keyword"
     return None, "unresolved"
 
 
@@ -407,9 +441,9 @@ def extract_payment_frequency(text: str) -> tuple[Optional[str], str]:
     patterns = [
         (r"(ежедневн\w*\s*выплат|выплат\w*\s*ежедневн)", "ежедневно"),
         (r"(еженедельн\w*\s*выплат|раз\s*в\s*недел|выплат\w*\s*раз\s*в\s*недел)", "еженедельно"),
-        (r"(2\s*раза\s*в\s*месяц|дважды\s*в\s*месяц)", "2 раза в месяц"),
+        (r"(2\s*раза\s*в\s*месяц|дважды\s*в\s*месяц|два\s*раза\s*в\s*месяц)", "2 раза в месяц"),
         (r"(ежемесячн\w*|раз\s*в\s*месяц)", "ежемесячно"),
-        (r"(после\s*смен|в\s*конце\s*смен)", "после смены"),
+        (r"(после\s*смен|в\s*конце\s*смен|по\s*завершени[ию]\s*смен)", "после смены"),
     ]
     for pattern, value in patterns:
         if re.search(pattern, t):
@@ -462,6 +496,7 @@ def compute_hourly_rate(
     shift_info: Optional[ShiftLength],
     monthly_salary: Optional[float] = None,
     schedule: Optional[str] = None,
+    source_text: str = "",
 ):
     if hourly_rate:
         return round(float(hourly_rate), 2), "exact:provided_hourly", ["hourly rate taken directly from vacancy text"]
@@ -473,7 +508,20 @@ def compute_hourly_rate(
     if shift_rate and shift_info and shift_info.ambiguous:
         return None, "unresolved:ambiguous_shift_duration", ["multiple shift durations"]
     if monthly_salary:
-        return None, "unresolved:monthly_salary_requires_validated_model", ["monthly salary is not converted to hourly without validated logic"]
+        if not shift_info or shift_info.hours is None:
+            return None, "unresolved:missing_shift_duration", ["missing shift_duration_hours for monthly salary conversion"]
+        if shift_info.ambiguous:
+            return None, "unresolved:ambiguous_shift_duration", ["multiple shift durations"]
+        days_from_text = _extract_days_per_month_from_text(source_text or "")
+        days_per_month = days_from_text or SCHEDULE_SHIFTS_PER_MONTH.get(str(schedule or "").strip(), 22.0)
+        denominator = float(days_per_month) * float(shift_info.hours)
+        if denominator <= 0:
+            return None, "unresolved:invalid_denominator", ["invalid work days or shift duration"]
+        hourly = float(round(float(monthly_salary) / denominator))
+        method = "calculated:monthly_salary/(work_days*shift_hours)"
+        if days_from_text is None and schedule not in SCHEDULE_SHIFTS_PER_MONTH:
+            method += ":default_22_days"
+        return hourly, method, [f"work_days_per_month={days_per_month}"]
     return None, "unresolved:insufficient_data", ["missing hourly and shift duration"]
 
 
@@ -604,6 +652,7 @@ def map_hh(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
             sl,
             monthly_salary=monthly_salary,
             schedule=schedule,
+            source_text=desc_text,
         )
         payment_frequency, payment_frequency_source = extract_payment_frequency(desc_text)
         benefits = extract_benefits(desc_text)
@@ -668,8 +717,10 @@ def map_hh(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "shift_duration_unresolved": sl.hours is None,
                 "employment_type": employment_type,
                 "schedule": schedule,
+                "payment_frequency": payment_frequency,
                 "hourly_rate": hr,
                 "hourly_rate_method": hr_method,
+                "hourly_rate_note": "; ".join(hr_notes) if hr_notes else None,
                 "shift_income_total": shift_income_total,
                 "parsing_notes": "; ".join(dict.fromkeys([n for n in parsing_notes if n])),
             }
