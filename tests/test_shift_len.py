@@ -46,7 +46,7 @@ def test_shift_rate_and_explicit_shift_len():
     sl = extract_shift_len(text)
     hour, method, _ = compute_hourly_rate(None, 4800, sl)
     assert hour == pytest.approx(400.0)
-    assert method.startswith("exact")
+    assert method.endswith("shift_duration")
 
 
 def test_time_range_shift_len_day_and_night():
@@ -61,7 +61,7 @@ def test_decimal_shift_len_parsing():
     hour, method, _ = compute_hourly_rate(None, 4200, sl)
     assert sl.hours == pytest.approx(10.5)
     assert hour == pytest.approx(400.0)
-    assert method.startswith("exact")
+    assert method.endswith("shift_duration")
 
 
 def test_unresolved_shift_len_keeps_hourly_unresolved():
@@ -97,13 +97,13 @@ def test_shift_income_total():
     sl = ShiftLength(hours=12.0)
     total, method = compute_shift_income_total(400.0, sl)
     assert total == pytest.approx(4800.0)
-    assert method.startswith("exact")
+    assert method.endswith("shift_duration")
 
 
 def test_employment_type_tk_gph_and_both():
-    assert extract_employment_type("официальное трудоустройство по ТК РФ")[0] == "ТК"
+    assert extract_employment_type("официальное трудоустройство по ТК РФ")[0] == "ТК РФ"
     assert extract_employment_type("оформление по ГПХ")[0] == "ГПХ"
-    assert extract_employment_type("возможно оформление по ТК РФ или ГПХ")[0] == "ТК / ГПХ"
+    assert extract_employment_type("возможно оформление по ТК РФ или ГПХ")[0] == "ТК РФ / ГПХ"
 
 
 @pytest.mark.parametrize(
@@ -144,9 +144,23 @@ def test_extract_benefits_no_duplicates():
     assert extract_benefits(text) == ["ДМС", "питание", "скидки сотрудникам"]
 
 
-def test_compute_hourly_rate_does_not_use_monthly_salary_without_validated_model():
-    sl = ShiftLength(hours=12.0)
-    hour, method, notes = compute_hourly_rate(None, None, sl, monthly_salary=100000, schedule="2/2")
-    assert hour is None
-    assert method == "unresolved:monthly_salary_requires_validated_model"
+def test_compute_hourly_rate_uses_monthly_salary_schedule_and_shift_duration():
+    sl = ShiftLength(hours=8.0)
+    hour, method, notes = compute_hourly_rate(None, None, sl, monthly_salary=60000, schedule="5/2")
+    assert hour == pytest.approx(341.0)
+    assert method.startswith("calculated:monthly_salary")
     assert notes
+
+
+def test_compute_hourly_rate_shift_salary_example():
+    sl = ShiftLength(hours=12.0)
+    hour, method, _ = compute_hourly_rate(None, 3000, sl)
+    assert hour == pytest.approx(250.0)
+    assert method.endswith("shift_duration")
+
+
+def test_compute_hourly_rate_direct_hourly_example():
+    sl = ShiftLength(hours=12.0)
+    hour, method, _ = compute_hourly_rate(400, None, sl)
+    assert hour == pytest.approx(400.0)
+    assert method == "exact:provided_hourly"

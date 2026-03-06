@@ -25,13 +25,15 @@ def test_map_hh_extracts_shift_schedule_and_rates_from_text():
     assert row["shift_duration_confidence"] == "high"
     assert row["shift_duration_unresolved"] is False
     assert row["График"] == "2/2"
-    assert row["Труд-во"] == "ТК"
+    assert row["Труд-во"] == "полная занятость / ТК РФ"
     assert row["В час"] == 400.0
     assert row["Средний совокупный доход при графике 2/2 по 12 часов"] == 4800.0
     assert row["hourly_rate_method"].startswith("exact")
+    assert row["hourly_rate_note"] is not None
+    assert row["payment_frequency"] is None
 
 
-def test_map_hh_does_not_compute_hourly_without_shift_duration():
+def test_map_hh_returns_null_hourly_when_missing_shift_duration_for_monthly_salary():
     items = [
         {
             "name": "Кассир",
@@ -53,10 +55,10 @@ def test_map_hh_does_not_compute_hourly_without_shift_duration():
     assert row["Длительность смены"] is None
     assert row["shift_duration_source"] == "unresolved"
     assert row["shift_duration_unresolved"] is True
-    assert row["Труд-во"] == "ТК / ГПХ"
+    assert row["Труд-во"] == "ТК РФ / ГПХ"
     assert row["График"] == "3/3"
     assert row["В час"] is None
-    assert row["hourly_rate_method"] == "unresolved:monthly_salary_requires_validated_model"
+    assert row["hourly_rate_method"] == "unresolved:missing_shift_duration"
     assert row["Средний совокупный доход при графике 2/2 по 12 часов"] is None
 
 
@@ -80,6 +82,7 @@ def test_map_hh_extracts_payment_frequency_and_benefits():
 
     row = map_hh(items)[0]
     assert row["Частота выплат"] == "еженедельно"
+    assert row["payment_frequency"] == "еженедельно"
     assert row["Льготы"] == "ДМС, питание"
-    assert row["В час"] is None
-    assert row["hourly_rate_method"] == "unresolved:monthly_salary_requires_validated_model"
+    assert row["В час"] == 556.0
+    assert row["hourly_rate_method"].startswith("calculated:monthly_salary")
