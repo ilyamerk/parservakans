@@ -1,3 +1,6 @@
+import pytest
+pytest.importorskip("httpx")
+
 from pathlib import Path
 
 from fastapi.testclient import TestClient

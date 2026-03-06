@@ -1,7 +1,7 @@
-import pandas as pd
 import numpy as np
+import pandas as pd
 
-from build_job_analytics import compute_metrics, write_excel, RATES_SHEET_BASE
+from build_job_analytics import RATES_SHEET_BASE, compute_metrics, write_excel
 
 
 def test_compute_metrics_sets_dash_for_missing_shift_length():
@@ -14,22 +14,12 @@ def test_compute_metrics_sets_dash_for_missing_shift_length():
             }
         ]
     )
-
     result = compute_metrics(df)
-
     assert result.loc[0, "Длительность смены"] == "-"
 
 
 def test_write_excel_creates_rates_sheet(tmp_path):
-    df = pd.DataFrame(
-        [
-            {
-                "Должность": "Повар",
-                "В час": 200.0,
-                "Длительность смены": 12,
-            }
-        ]
-    )
+    df = pd.DataFrame([{"Должность": "Повар", "В час": 200.0, "Длительность смены": 12}])
     rates = [
         {"type": "hourly", "value": "200", "url": "https://example.com"},
         {"type": "shift", "value": "2400", "url": "https://example.com"},
@@ -46,9 +36,6 @@ def test_write_excel_creates_rates_sheet(tmp_path):
     assert not rates_df.empty
 
 
-def test_write_excel_strips_illegal_xml_control_chars(tmp_path):
-
-
 def test_compute_metrics_uses_monthly_formula_with_schedule_mapping():
     df = pd.DataFrame(
         [
@@ -61,9 +48,7 @@ def test_compute_metrics_uses_monthly_formula_with_schedule_mapping():
             }
         ]
     )
-
     result = compute_metrics(df)
-
     assert result.loc[0, "В час"] == 409.09
     assert result.loc[0, "Средний совокупный доход при графике 2/2 по 12 часов"] == 4909.09
 
@@ -80,12 +65,14 @@ def test_compute_metrics_uses_default_22_shifts_for_unknown_schedule():
             }
         ]
     )
-
     result = compute_metrics(df)
-
     assert result.loc[0, "В час"] == 500.0
     assert result.loc[0, "Средний совокупный доход при графике 2/2 по 12 часов"] == 6000.0
-    bad_text = "Поварна смену"
+
+
+def test_write_excel_strips_illegal_xml_control_chars(tmp_path):
+    bad_text = "Повар\x0bна смену"
+на смену"
     df = pd.DataFrame([{"Должность": bad_text, "Ссылка": "https://example.com"}])
 
     out_path = tmp_path / "illegal_chars.xlsx"
