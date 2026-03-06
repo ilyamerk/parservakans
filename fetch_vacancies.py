@@ -333,7 +333,7 @@ def extract_employment_type(text: str, employment_name: str = "") -> tuple[Optio
     )
     if tk and gph:
         notes.append("both ТК and ГПХ found")
-        return "ТК|ГПХ", notes
+        return "ТК / ГПХ", notes
     if tk:
         return "ТК", notes
     if gph:
@@ -353,6 +353,45 @@ def extract_schedule(text: str, schedule_name: str = "") -> tuple[Optional[str],
     return None, "unresolved"
 
 
+def extract_payment_frequency(text: str) -> tuple[Optional[str], str]:
+    t = (text or "").lower()
+    patterns = [
+        (r"(ежедневн\w*\s*выплат|выплат\w*\s*ежедневн)", "ежедневно"),
+        (r"(еженедельн\w*\s*выплат|раз\s*в\s*недел|выплат\w*\s*раз\s*в\s*недел)", "еженедельно"),
+        (r"(2\s*раза\s*в\s*месяц|дважды\s*в\s*месяц)", "2 раза в месяц"),
+        (r"(ежемесячн\w*|раз\s*в\s*месяц)", "ежемесячно"),
+        (r"(после\s*смен|в\s*конце\s*смен)", "после смены"),
+    ]
+    for pattern, value in patterns:
+        if re.search(pattern, t):
+            return value, "description_or_structured"
+    return None, "unresolved"
+
+
+def extract_benefits(text: str) -> list[str]:
+    t = (text or "").lower()
+    benefit_patterns = [
+        (r"\bдмс\b|добровольн\w*\s*медицинск\w*\s*страх", "ДМС"),
+        (r"бесплатн\w*\s*питан|питан\w*\s*за\s*сч[её]т\s*компан|компенсац\w*\s*питан", "питание"),
+        (r"скидк\w*\s*сотрудник|корпоративн\w*\s*скидк", "скидки сотрудникам"),
+        (r"оплачиваем\w*\s*обучен|обучен\w*\s*за\s*сч[её]т\s*компан", "обучение"),
+        (r"\bуниформ\w*\b|\bформ\w*\b", "униформа"),
+        (r"развозк\w*|корпоративн\w*\s*транспорт|компенсац\w*\s*проезд", "транспорт"),
+        (r"бонус\w*|преми\w*", "бонусы/премии"),
+        (r"медкнижк\w*\s*за\s*сч[её]т\s*работодат", "медкнижка за счёт работодателя"),
+        (r"проживан\w*|жиль[её]", "проживание"),
+        (r"подарк\w*\s*дет|подарк\w*\s*сотрудник", "подарки"),
+        (r"спорт|фитнес", "спорт/фитнес"),
+        (r"страхован", "страхование"),
+        (r"карьерн\w*\s*рост", "карьерный рост"),
+    ]
+    found: list[str] = []
+    for pattern, normalized in benefit_patterns:
+        if re.search(pattern, t):
+            found.append(normalized)
+    return list(dict.fromkeys(found))
+
+
 def extract_shift_payment(text: str) -> Optional[float]:
     t = (text or "").lower().replace("\xa0", " ")
     m = re.search(r"(\d[\d\s]*(?:[\.,]\d+)?)\s*(?:руб(?:\.|лей|ля)?|₽)?\s*(?:за\s*смен|/\s*смен)", t)
@@ -368,13 +407,36 @@ def extract_hourly_payment(text: str) -> Optional[float]:
         return None
     return float(m.group(1).replace(" ", "").replace(",", "."))
 
-def compute_hourly_rate(hourly_rate: Optional[float], shift_rate: Optional[float], shift_info: Optional[ShiftLength]):
+SCHEDULE_SHIFTS_PER_MONTH = {
+    "2/2": 15.0,
+    "5/2": 22.0,
+    "3/3": 15.0,
+    "6/1": 26.0,
+    "7/7": 14.0,
+    "4/3": 17.0,
+    "4/4": 13.0,
+}
+
+
+def compute_hourly_rate(
+    hourly_rate: Optional[float],
+    shift_rate: Optional[float],
+    shift_info: Optional[ShiftLength],
+    monthly_salary: Optional[float] = None,
+    schedule: Optional[str] = None,
+):
     if hourly_rate:
         return round(float(hourly_rate), 2), "provided:hourly", []
     if shift_rate and shift_info and shift_info.hours and not shift_info.ambiguous:
         return round(float(shift_rate) / float(shift_info.hours), 2), "exact:shift_rate/shift_duration", []
     if shift_rate and shift_info and shift_info.ambiguous:
         return None, "unresolved:ambiguous_shift_duration", ["multiple shift durations"]
+    shifts_per_month = SCHEDULE_SHIFTS_PER_MONTH.get(str(schedule or ""))
+    if monthly_salary and shift_info and shift_info.hours and not shift_info.ambiguous and shifts_per_month:
+        hourly = float(monthly_salary) / (float(shift_info.hours) * shifts_per_month)
+        return round(hourly, 2), "calculated:monthly_salary/(shift_duration*shifts_per_month)", []
+    if monthly_salary and not shifts_per_month:
+        return None, "unresolved:unknown_schedule_for_monthly_salary", ["monthly salary provided but schedule not supported"]
     return None, "unresolved:insufficient_data", ["missing hourly and shift duration"]
 
 
@@ -485,16 +547,37 @@ def map_hh(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
         sl = extract_shift_len(desc_text)
         employment_type, employment_notes = extract_employment_type(desc_text, employment_name)
-        schedule, _ = extract_schedule(desc_text, schedule_name)
+        schedule, schedule_source = extract_schedule(desc_text, schedule_name)
         hourly_from_text = extract_hourly_payment(desc_text)
         shift_rate = extract_shift_payment(desc_text)
-        hr, hr_method, hr_notes = compute_hourly_rate(hourly_from_text, shift_rate, sl)
+        monthly_salary = salary.get("from") or salary.get("to")
+        hr, hr_method, hr_notes = compute_hourly_rate(
+            hourly_from_text,
+            shift_rate,
+            sl,
+            monthly_salary=monthly_salary,
+            schedule=schedule,
+        )
+        payment_frequency, payment_frequency_source = extract_payment_frequency(desc_text)
+        benefits = extract_benefits(desc_text)
         shift_income_total, shift_income_method = compute_shift_income_total(hr, sl)
 
         parsing_notes: list[str] = []
         parsing_notes.extend(sl.notes)
         parsing_notes.extend(employment_notes)
         parsing_notes.extend(hr_notes)
+        if sl.source == "unresolved":
+            parsing_notes.append("shift duration unresolved")
+        if employment_type is None:
+            parsing_notes.append("employment type unresolved")
+        if schedule_source != "unresolved":
+            parsing_notes.append(f"schedule source: {schedule_source}")
+        else:
+            parsing_notes.append("schedule unresolved")
+        if payment_frequency_source != "unresolved":
+            parsing_notes.append(f"payment frequency source: {payment_frequency_source}")
+        else:
+            parsing_notes.append("payment frequency unresolved")
         if shift_income_method.startswith("unresolved"):
             parsing_notes.append(shift_income_method)
 
@@ -511,8 +594,8 @@ def map_hh(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "Требуемый\nопыт": (it.get("experience") or {}).get("name", ""),
                 "Труд-во": employment_type,
                 "График": schedule,
-                "Частота \nвыплат": "",
-                "Льготы": "",
+                "Частота выплат": payment_frequency,
+                "Льготы": ", ".join(benefits),
                 "Обязаности": str((it.get("snippet") or {}).get("responsibility", "") or ""),
                 "Ссылка": (it.get("alternate_url") or ""),
                 "Примечание": "; ".join(dict.fromkeys([n for n in parsing_notes if n])),

@@ -103,7 +103,7 @@ def test_shift_income_total():
 def test_employment_type_tk_gph_and_both():
     assert extract_employment_type("официальное трудоустройство по ТК РФ")[0] == "ТК"
     assert extract_employment_type("оформление по ГПХ")[0] == "ГПХ"
-    assert extract_employment_type("возможно оформление по ТК РФ или ГПХ")[0] == "ТК|ГПХ"
+    assert extract_employment_type("возможно оформление по ТК РФ или ГПХ")[0] == "ТК / ГПХ"
 
 
 @pytest.mark.parametrize(
@@ -119,3 +119,45 @@ def test_employment_type_tk_gph_and_both():
 def test_extract_schedule(text, expected):
     value, _ = extract_schedule(text)
     assert value == expected
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("ежедневные выплаты", "ежедневно"),
+        ("выплаты раз в неделю", "еженедельно"),
+        ("2 раза в месяц", "2 раза в месяц"),
+        ("выплаты после смены", "после смены"),
+    ],
+)
+def test_extract_payment_frequency(text, expected):
+    from fetch_vacancies import extract_payment_frequency
+
+    value, _ = extract_payment_frequency(text)
+    assert value == expected
+
+
+def test_extract_benefits_no_duplicates():
+    from fetch_vacancies import extract_benefits
+
+    text = "ДМС, бесплатное питание, корпоративные скидки, питание, ДМС"
+    assert extract_benefits(text) == ["ДМС", "питание", "скидки сотрудникам"]
+
+
+def test_compute_hourly_rate_from_monthly_salary_supported_schedule():
+    sl = ShiftLength(hours=12.0)
+    hour, method, _ = compute_hourly_rate(None, None, sl, monthly_salary=100000, schedule="2/2")
+    assert hour == pytest.approx(555.56)
+    assert method.startswith("calculated")
+
+
+def test_compute_hourly_rate_from_monthly_salary_5_2():
+    sl = ShiftLength(hours=12.0)
+    hour, _, _ = compute_hourly_rate(None, None, sl, monthly_salary=100000, schedule="5/2")
+    assert hour == pytest.approx(378.79)
+
+
+def test_compute_hourly_rate_from_monthly_salary_3_3():
+    sl = ShiftLength(hours=12.0)
+    hour, _, _ = compute_hourly_rate(None, None, sl, monthly_salary=100000, schedule="3/3")
+    assert hour == pytest.approx(555.56)

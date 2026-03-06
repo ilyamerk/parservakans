@@ -76,3 +76,26 @@ def test_write_excel_strips_illegal_xml_control_chars(tmp_path):
 
     restored = pd.read_excel(out_path, sheet_name="Данные")
     assert restored.loc[0, "Должность"] == "Поварна смену"
+
+
+def test_normalize_columns_keeps_single_link_column():
+    from build_job_analytics import normalize_columns
+
+    df = pd.DataFrame(
+        [
+            {
+                "Ссылка": "https://hh.ru/vacancy/1",
+                "URL": np.nan,
+                "ссылка на вакансию": np.nan,
+            },
+            {
+                "Ссылка": np.nan,
+                "URL": "https://hh.ru/vacancy/2",
+                "ссылка на вакансию": np.nan,
+            },
+        ]
+    )
+    normalized = normalize_columns(df)
+    assert list(normalized.columns).count("Ссылка") == 1
+    assert normalized.loc[0, "Ссылка"] == "https://hh.ru/vacancy/1"
+    assert normalized.loc[1, "Ссылка"] == "https://hh.ru/vacancy/2"

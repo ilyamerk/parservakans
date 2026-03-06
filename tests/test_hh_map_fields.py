@@ -48,7 +48,32 @@ def test_map_hh_does_not_compute_hourly_without_shift_duration():
 
     row = map_hh(items)[0]
     assert row["Длительность смены"] is None
-    assert row["Труд-во"] == "ТК|ГПХ"
+    assert row["Труд-во"] == "ТК / ГПХ"
     assert row["График"] == "3/3"
     assert row["В час"] is None
     assert row["Средний совокупный доход при графике 2/2 по 12 часов"] is None
+
+
+def test_map_hh_extracts_payment_frequency_and_benefits():
+    items = [
+        {
+            "name": "Кладовщик",
+            "employer": {"name": "Склад"},
+            "published_at": "2026-01-01",
+            "salary": {"from": 100000},
+            "experience": {"name": "Без опыта"},
+            "employment": {"name": "Полная занятость"},
+            "schedule": {"name": "Сменный график"},
+            "snippet": {
+                "requirement": "график 2/2 по 12 часов, выплаты раз в неделю, ДМС и бесплатное питание",
+                "responsibility": "работа",
+            },
+            "alternate_url": "https://hh.ru/vacancy/102",
+        }
+    ]
+
+    row = map_hh(items)[0]
+    assert row["Частота выплат"] == "еженедельно"
+    assert row["Льготы"] == "ДМС, питание"
+    assert row["В час"] == 555.56
+    assert row["hourly_rate_method"].startswith("calculated")
