@@ -17,8 +17,6 @@ class ParserRunRequest:
     timeout: float = 8.0
     role: str = ""
     no_filter: bool = True
-    avito_headful: bool = False
-    avito_state: str = "avito_state.json"
 
 
 @dataclass

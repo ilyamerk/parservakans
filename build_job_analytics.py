@@ -77,15 +77,7 @@ def _clean_url(u: str) -> str:
         while host.startswith("www."):
             host = host[4:]
 
-        # m.avito.ru -> avito.ru
-        if host.startswith("m.avito.ru"):
-            host = "avito.ru"
-
-        # итог: ровно один www для avito, иначе оставляем как есть
-        netloc = "www.avito.ru" if host.endswith("avito.ru") else (p.netloc or "")
-
-        # возвращаем без query/fragment
-        return _up.urlunsplit((scheme, netloc, p.path, "", ""))
+        return _up.urlunsplit((scheme, p.netloc or "", p.path, "", ""))
     except Exception:
         return u
 
@@ -220,7 +212,7 @@ def write_excel(df: pd.DataFrame, path: Path, rates: list[dict] | None = None):
             df["Ссылка"] = (
                 df["Ссылка"]
                 .astype(str)
-                .map(_clean_url)  # твоя функция: чистит m.avito.ru, www, убирает query/fragment
+                .map(_clean_url)
             )
         except Exception:
             pass
@@ -254,9 +246,6 @@ def write_excel(df: pd.DataFrame, path: Path, rates: list[dict] | None = None):
                 for r, url in enumerate(df["Ссылка"].astype(str), start=1):  # row=1 — первая строка данных
                     u = (url or "").strip()
                     if u:
-                        # нормализуем домен Avito и уберём query на всякий случай
-                        u = re.sub(r"^https?://m\.avito\.ru", "https://www.avito.ru", u)
-                        u = re.sub(r"^https?://avito\.ru", "https://www.avito.ru", u)
                         u = re.sub(r"\?.*$", "", u)
                     if u.startswith("http"):
                         ws.write_url(r, col_idx, u, fmt_link, u)

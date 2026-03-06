@@ -71,10 +71,6 @@ def run_parser_pipeline(request: ParserRunRequest) -> ParserRunResult:
     ]
     if request.no_filter or not request.role:
         fetch_cmd.append("--no_filter")
-    if request.avito_headful:
-        fetch_cmd.append("--avito_headful")
-    if request.avito_state:
-        fetch_cmd.extend(["--avito_state", request.avito_state])
 
     _run_cmd(fetch_cmd)
     _run_cmd([sys.executable, str(ANALYTICS_SCRIPT), "--input", str(csv_path), "--output", str(xlsx_path)])
