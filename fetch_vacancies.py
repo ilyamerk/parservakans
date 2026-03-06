@@ -276,42 +276,91 @@ def _parse_hour_value(raw: str) -> Optional[float]:
     return float(raw.replace(",", "."))
 
 
-def extract_shift_len(text: str) -> ShiftLength:
-    t = (text or "").lower()
-    candidates: list[float] = []
+def _normalize_shift_text(text: str) -> str:
+    t = (text or "").lower().replace("\xa0", " ")
+    t = re.sub(r"[−–—]", "-", t)
+    t = re.sub(r"\s+", " ", t)
+    return t.strip()
 
-    for m in re.finditer(r"(?:смен[аы]\s*по|по)\s*(\d+(?:[\.,]\d+)?)\s*час", t):
-        v = _parse_hour_value(m.group(1))
-        if v:
-            candidates.append(v)
 
-    for m in re.finditer(r"(?:смена\s*)?(\d+(?:[\.,]\d+)?)(?:-?часовая|\s*час(?:ов|а)?)", t):
-        ctx = t[max(0, m.start()-12):m.start()]
-        if "перерыв" in ctx and "смен" not in ctx:
-            continue
-        v = _parse_hour_value(m.group(1))
-        if v:
-            candidates.append(v)
+def _time_range_duration(start_h: int, start_m: int, end_h: int, end_m: int) -> Optional[float]:
+    if start_h > 23 or end_h > 23 or start_m > 59 or end_m > 59:
+        return None
+    start_total = start_h * 60 + start_m
+    end_total = end_h * 60 + end_m
+    duration_minutes = end_total - start_total
+    if duration_minutes <= 0:
+        duration_minutes += 24 * 60
+    return round(duration_minutes / 60.0, 2)
 
-    for tr in re.finditer(r"(?:с\s*)?(\d{1,2}):(\d{2})\s*(?:до|\-|–|—)\s*(\d{1,2}):(\d{2})", t):
-        h1 = int(tr.group(1)) + int(tr.group(2)) / 60
-        h2 = int(tr.group(3)) + int(tr.group(4)) / 60
-        dur = h2 - h1
-        if dur <= 0:
-            dur += 24
-        candidates.append(round(dur, 2))
 
-    if not candidates:
-        return ShiftLength(hours=None, source="unresolved", confidence="low", notes=["shift duration not found"])
+def extract_shift_len(text: str, structured_text: str = "") -> ShiftLength:
+    description = _normalize_shift_text(text)
+    structured = _normalize_shift_text(structured_text)
+    notes: list[str] = []
 
-    unique = sorted(set(candidates))
-    return ShiftLength(
-        hours=unique[0],
-        source="description_explicit_hours" if len(unique) == 1 else "description_multiple_variants",
-        confidence="high",
-        notes=[] if len(unique) == 1 else ["multiple variants detected"],
-        ambiguous=len(unique) > 1,
+    # Находим кандидатов в порядке приоритета источников.
+    candidates: dict[str, list[tuple[float, str]]] = {
+        "structured_field": [],
+        "description_explicit_hours": [],
+        "description_time_rang": [],
+        "heuristic": [],
+    }
+
+    explicit_patterns = [
+        r"(?:длительност[ьи]\s*смен[ыа]|смен[аы]\s*по|смена\s*|по\s*)(\d+(?:[\.,]\d+)?)\s*(?:ч\.?|час(?:а|ов)?)\b",
+        r"\b(\d+(?:[\.,]\d+)?)\s*-\s*час(?:ов(?:ая|ые|ой)?|а(?:я|я\s*смена)?)\b",
+        r"\bпо\s*(\d+(?:[\.,]\d+)?)\s*ч\b",
+    ]
+
+    for pattern in explicit_patterns:
+        for m in re.finditer(pattern, description):
+            hours = _parse_hour_value(m.group(1))
+            if hours:
+                candidates["description_explicit_hours"].append((hours, m.group(0).strip()))
+
+    if structured:
+        for pattern in explicit_patterns:
+            for m in re.finditer(pattern, structured):
+                hours = _parse_hour_value(m.group(1))
+                if hours:
+                    candidates["structured_field"].append((hours, m.group(0).strip()))
+
+    time_range_pattern = re.compile(
+        r"(?:с\s*)?(\d{1,2})(?::(\d{2}))?\s*(?:до|-)\s*(\d{1,2})(?::(\d{2}))?"
     )
+    for m in time_range_pattern.finditer(description):
+        fragment = m.group(0).strip()
+        # Отсекаем нерелевантные диапазоны вроде "опыт от 1 до 3 лет".
+        if ":" not in fragment and not fragment.startswith("с "):
+            continue
+        duration = _time_range_duration(
+            int(m.group(1)),
+            int(m.group(2) or 0),
+            int(m.group(3)),
+            int(m.group(4) or 0),
+        )
+        if duration:
+            candidates["description_time_rang"].append((duration, fragment))
+
+    priority_order = ["structured_field", "description_explicit_hours", "description_time_rang", "heuristic"]
+    for source in priority_order:
+        source_values = candidates[source]
+        if not source_values:
+            continue
+        unique_hours = sorted({v for v, _ in source_values})
+        snippets = sorted({s for _, s in source_values})
+        if len(unique_hours) == 1:
+            confidence = "high" if source != "heuristic" else "medium"
+            notes.append(f"shift duration resolved from {source}: {snippets[0]}")
+            return ShiftLength(hours=unique_hours[0], source=source, confidence=confidence, notes=notes, ambiguous=False)
+
+        # Не выбираем случайный вариант, если найдено несколько длительностей.
+        notes.append(f"ambiguous {source} values: {', '.join(str(v) for v in unique_hours)}")
+        notes.extend(f"matched fragment: {fragment}" for fragment in snippets)
+        return ShiftLength(hours=None, source=source, confidence="low", notes=notes, ambiguous=True)
+
+    return ShiftLength(hours=None, source="unresolved", confidence="low", notes=["shift duration not found"])
 
 
 
@@ -407,17 +456,6 @@ def extract_hourly_payment(text: str) -> Optional[float]:
         return None
     return float(m.group(1).replace(" ", "").replace(",", "."))
 
-SCHEDULE_SHIFTS_PER_MONTH = {
-    "2/2": 15.0,
-    "5/2": 22.0,
-    "3/3": 15.0,
-    "6/1": 26.0,
-    "7/7": 14.0,
-    "4/3": 17.0,
-    "4/4": 13.0,
-}
-
-
 def compute_hourly_rate(
     hourly_rate: Optional[float],
     shift_rate: Optional[float],
@@ -426,17 +464,16 @@ def compute_hourly_rate(
     schedule: Optional[str] = None,
 ):
     if hourly_rate:
-        return round(float(hourly_rate), 2), "provided:hourly", []
+        return round(float(hourly_rate), 2), "exact:provided_hourly", ["hourly rate taken directly from vacancy text"]
     if shift_rate and shift_info and shift_info.hours and not shift_info.ambiguous:
-        return round(float(shift_rate) / float(shift_info.hours), 2), "exact:shift_rate/shift_duration", []
+        method = "exact:shift_rate/shift_duration"
+        if shift_info.confidence != "high":
+            method = "heuristic:shift_rate/shift_duration"
+        return round(float(shift_rate) / float(shift_info.hours), 2), method, [f"shift duration source: {shift_info.source}"]
     if shift_rate and shift_info and shift_info.ambiguous:
         return None, "unresolved:ambiguous_shift_duration", ["multiple shift durations"]
-    shifts_per_month = SCHEDULE_SHIFTS_PER_MONTH.get(str(schedule or ""))
-    if monthly_salary and shift_info and shift_info.hours and not shift_info.ambiguous and shifts_per_month:
-        hourly = float(monthly_salary) / (float(shift_info.hours) * shifts_per_month)
-        return round(hourly, 2), "calculated:monthly_salary/(shift_duration*shifts_per_month)", []
-    if monthly_salary and not shifts_per_month:
-        return None, "unresolved:unknown_schedule_for_monthly_salary", ["monthly salary provided but schedule not supported"]
+    if monthly_salary:
+        return None, "unresolved:monthly_salary_requires_validated_model", ["monthly salary is not converted to hourly without validated logic"]
     return None, "unresolved:insufficient_data", ["missing hourly and shift duration"]
 
 
@@ -545,7 +582,17 @@ def map_hh(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
             )
         )
 
-        sl = extract_shift_len(desc_text)
+        structured_shift_text = " ".join(
+            filter(
+                None,
+                [
+                    str((it.get("working_hours") or "") or ""),
+                    str((it.get("work_format") or "") or ""),
+                    schedule_name,
+                ],
+            )
+        )
+        sl = extract_shift_len(desc_text, structured_text=structured_shift_text)
         employment_type, employment_notes = extract_employment_type(desc_text, employment_name)
         schedule, schedule_source = extract_schedule(desc_text, schedule_name)
         hourly_from_text = extract_hourly_payment(desc_text)
@@ -581,6 +628,22 @@ def map_hh(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if shift_income_method.startswith("unresolved"):
             parsing_notes.append(shift_income_method)
 
+        logger.info(
+            "shift_duration_resolution vacancy=%s source=%s confidence=%s hours=%s ambiguous=%s",
+            it.get("id") or it.get("alternate_url") or it.get("name") or "unknown",
+            sl.source,
+            sl.confidence,
+            sl.hours,
+            sl.ambiguous,
+        )
+        logger.info(
+            "hourly_rate_resolution vacancy=%s method=%s hourly=%s shift_rate=%s",
+            it.get("id") or it.get("alternate_url") or it.get("name") or "unknown",
+            hr_method,
+            hr,
+            shift_rate,
+        )
+
         rows.append(
             {
                 "Должность": it.get("name", ""),
@@ -600,6 +663,9 @@ def map_hh(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "Ссылка": (it.get("alternate_url") or ""),
                 "Примечание": "; ".join(dict.fromkeys([n for n in parsing_notes if n])),
                 "shift_duration_hours": sl.hours,
+                "shift_duration_source": sl.source,
+                "shift_duration_confidence": sl.confidence,
+                "shift_duration_unresolved": sl.hours is None,
                 "employment_type": employment_type,
                 "schedule": schedule,
                 "hourly_rate": hr,
