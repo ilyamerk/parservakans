@@ -161,8 +161,7 @@ def extract_shift_len(text: str) -> ShiftLength:
         if v:
             candidates.append(v)
 
-    tr = re.search(r"(\d{1,2}):(\d{2})\s*до\s*(\d{1,2}):(\d{2})", t)
-    if tr:
+    for tr in re.finditer(r"(?:с\s*)?(\d{1,2}):(\d{2})\s*(?:до|\-|–|—)\s*(\d{1,2}):(\d{2})", t):
         h1 = int(tr.group(1)) + int(tr.group(2)) / 60
         h2 = int(tr.group(3)) + int(tr.group(4)) / 60
         dur = h2 - h1
@@ -176,12 +175,66 @@ def extract_shift_len(text: str) -> ShiftLength:
     unique = sorted(set(candidates))
     return ShiftLength(
         hours=unique[0],
-        source="description_explicit_hours",
+        source="description_explicit_hours" if len(unique) == 1 else "description_multiple_variants",
         confidence="high",
         notes=[] if len(unique) == 1 else ["multiple variants detected"],
         ambiguous=len(unique) > 1,
     )
 
+
+
+
+def extract_employment_type(text: str, employment_name: str = "") -> tuple[Optional[str], list[str]]:
+    combined = " ".join(filter(None, [text, employment_name])).lower()
+    notes: list[str] = []
+    tk = bool(
+        re.search(
+            r"(по\s*тк\s*рф|по\s*тк\b|трудов(?:ой|ого)?\s*договор|официальн\w*\s*(?:оформлен|трудоустрой))",
+            combined,
+        )
+    )
+    gph = bool(
+        re.search(
+            r"(\bгпх\b|договор\s*гпх|гражданско-?правов(?:ой|ого)?\s*договор|самозанят|подряд)",
+            combined,
+        )
+    )
+    if tk and gph:
+        notes.append("both ТК and ГПХ found")
+        return "ТК|ГПХ", notes
+    if tk:
+        return "ТК", notes
+    if gph:
+        return "ГПХ", notes
+    return None, ["employment type unresolved"]
+
+
+def extract_schedule(text: str, schedule_name: str = "") -> tuple[Optional[str], str]:
+    combined = " ".join(filter(None, [text, schedule_name])).lower()
+    m = re.search(r"\b(\d{1,2})\s*/\s*(\d{1,2})\b", combined)
+    if m:
+        return f"{int(m.group(1))}/{int(m.group(2))}", "description_or_structured:pattern"
+    if "сменн" in combined:
+        return "сменный", "description_or_structured:keyword"
+    if "гибк" in combined:
+        return "гибкий", "description_or_structured:keyword"
+    return None, "unresolved"
+
+
+def extract_shift_payment(text: str) -> Optional[float]:
+    t = (text or "").lower().replace("\xa0", " ")
+    m = re.search(r"(\d[\d\s]*(?:[\.,]\d+)?)\s*(?:руб(?:\.|лей|ля)?|₽)?\s*(?:за\s*смен|/\s*смен)", t)
+    if not m:
+        return None
+    return float(m.group(1).replace(" ", "").replace(",", "."))
+
+
+def extract_hourly_payment(text: str) -> Optional[float]:
+    t = (text or "").lower().replace("\xa0", " ")
+    m = re.search(r"(\d[\d\s]*(?:[\.,]\d+)?)\s*(?:руб(?:\.|лей|ля)?|₽)?\s*(?:/\s*час|в\s*час|за\s*час)", t)
+    if not m:
+        return None
+    return float(m.group(1).replace(" ", "").replace(",", "."))
 
 def compute_hourly_rate(hourly_rate: Optional[float], shift_rate: Optional[float], shift_info: Optional[ShiftLength]):
     if hourly_rate:
@@ -191,6 +244,18 @@ def compute_hourly_rate(hourly_rate: Optional[float], shift_rate: Optional[float
     if shift_rate and shift_info and shift_info.ambiguous:
         return None, "unresolved:ambiguous_shift_duration", ["multiple shift durations"]
     return None, "unresolved:insufficient_data", ["missing hourly and shift duration"]
+
+
+
+
+def compute_shift_income_total(hourly_rate: Optional[float], shift_info: Optional[ShiftLength]):
+    if hourly_rate is None:
+        return None, "unresolved:missing_hourly_rate"
+    if not shift_info or shift_info.hours is None:
+        return None, "unresolved:missing_shift_duration"
+    if shift_info.ambiguous:
+        return None, "unresolved:ambiguous_shift_duration"
+    return round(float(hourly_rate) * float(shift_info.hours), 2), "exact:hourly_rate*shift_duration"
 
 
 _DAY_MAP = {"пн": "Mon", "вт": "Tue", "ср": "Wed", "чт": "Thu", "пт": "Fri", "сб": "Sat", "вс": "Sun", "mon": "Mon", "tue": "Tue", "wed": "Wed", "thu": "Thu", "fri": "Fri", "sat": "Sat", "sun": "Sun"}
@@ -271,10 +336,36 @@ def map_hh(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for it in items:
         salary = it.get("salary") or {}
-        desc_text = " ".join(filter(None, [str(it.get("snippet", {}).get("requirement", "")), str(it.get("snippet", {}).get("responsibility", ""))]))
+        schedule_name = str((it.get("schedule") or {}).get("name", "") or "")
+        employment_name = str((it.get("employment") or {}).get("name", "") or "")
+        desc_text = " ".join(
+            filter(
+                None,
+                [
+                    str(it.get("name", "") or ""),
+                    str((it.get("snippet") or {}).get("requirement", "") or ""),
+                    str((it.get("snippet") or {}).get("responsibility", "") or ""),
+                    schedule_name,
+                    employment_name,
+                ],
+            )
+        )
+
         sl = extract_shift_len(desc_text)
-        shift_rate = None
-        hr, _, _ = compute_hourly_rate(None, shift_rate, sl)
+        employment_type, employment_notes = extract_employment_type(desc_text, employment_name)
+        schedule, _ = extract_schedule(desc_text, schedule_name)
+        hourly_from_text = extract_hourly_payment(desc_text)
+        shift_rate = extract_shift_payment(desc_text)
+        hr, hr_method, hr_notes = compute_hourly_rate(hourly_from_text, shift_rate, sl)
+        shift_income_total, shift_income_method = compute_shift_income_total(hr, sl)
+
+        parsing_notes: list[str] = []
+        parsing_notes.extend(sl.notes)
+        parsing_notes.extend(employment_notes)
+        parsing_notes.extend(hr_notes)
+        if shift_income_method.startswith("unresolved"):
+            parsing_notes.append(shift_income_method)
+
         rows.append(
             {
                 "Должность": it.get("name", ""),
@@ -282,20 +373,28 @@ def map_hh(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "Дата публикации": it.get("published_at", ""),
                 "ЗП от (т.р.)": (salary.get("from") or 0) / 1000 if salary.get("from") else None,
                 "ЗП до (т.р.)": (salary.get("to") or 0) / 1000 if salary.get("to") else None,
-                "Средний совокупный доход при графике 2/2 по 12 часов": None,
+                "Средний совокупный доход при графике 2/2 по 12 часов": shift_income_total,
                 "В час": hr,
                 "Длительность смены": sl.hours,
                 "Требуемый\nопыт": (it.get("experience") or {}).get("name", ""),
-                "Труд-во": (it.get("employment") or {}).get("name", ""),
-                "График": (it.get("schedule") or {}).get("name", ""),
+                "Труд-во": employment_type,
+                "График": schedule,
                 "Частота \nвыплат": "",
                 "Льготы": "",
-                "Обязаности": str(it.get("snippet", {}).get("responsibility", "") or ""),
+                "Обязаности": str((it.get("snippet") or {}).get("responsibility", "") or ""),
                 "Ссылка": (it.get("alternate_url") or ""),
-                "Примечание": "",
+                "Примечание": "; ".join(dict.fromkeys([n for n in parsing_notes if n])),
+                "shift_duration_hours": sl.hours,
+                "employment_type": employment_type,
+                "schedule": schedule,
+                "hourly_rate": hr,
+                "hourly_rate_method": hr_method,
+                "shift_income_total": shift_income_total,
+                "parsing_notes": "; ".join(dict.fromkeys([n for n in parsing_notes if n])),
             }
         )
     return rows
+
 
 
 def _resolve_export_paths(target: str) -> tuple[Path, Path]:

@@ -159,43 +159,28 @@ def coerce_numbers(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def compute_metrics(df: pd.DataFrame) -> pd.DataFrame:
-    # 1) Если ставка в час отсутствует, считаем только по формуле:
-    #    (ЗП от / (Количество смен * Длительность смены)) * 1000
-    #    где ЗП от в тысячах рублей.
-    schedule_series = df.get("График", pd.Series([""] * len(df), index=df.index)).fillna("").astype(str).str.strip()
-    shifts_per_month = schedule_series.map(lambda s: SCHEDULE_SHIFTS_PER_MONTH.get(s, 22.0))
-
+    # Рассчитываем совокупный доход за смену только при наличии точной ставки в час
+    # и явно найденной длительности смены. Никаких дефолтных смен и пересчётов
+    # месячной зарплаты в часовую ставку не делаем.
     hour_series = df.get("В час", pd.Series(np.nan, index=df.index))
-    salary_from_series = df.get("ЗП от (т.р.)", pd.Series(np.nan, index=df.index))
     shift_length_series = df.get("Длительность смены", pd.Series(np.nan, index=df.index))
 
-    mask_no_hour = (
-        hour_series.isna()
-        & salary_from_series.notna()
+    can_compute_shift_income = (
+        hour_series.notna()
         & shift_length_series.notna()
         & (shift_length_series > 0)
     )
-    df.loc[mask_no_hour, "В час"] = (
-        salary_from_series[mask_no_hour]
-        * 1000.0
-        / (shifts_per_month[mask_no_hour] * shift_length_series[mask_no_hour])
-    )
-
-    # 2) Рассчитываем "за 12 часов" только если "В час" определено.
-    hour_series = df.get("В час", pd.Series(np.nan, index=df.index))
     df["Средний совокупный доход при графике 2/2 по 12 часов"] = np.where(
-        hour_series.notna(),
-        hour_series * 12.0,
+        can_compute_shift_income,
+        hour_series * shift_length_series,
         np.nan,
     )
 
-    # 3) Если "Длительность смены" пусто — оставляем прочерк.
     if "Длительность смены" in df.columns:
         df["Длительность смены"] = df["Длительность смены"].astype(object)
         mask_len = df["Длительность смены"].isna()
         df.loc[mask_len, "Длительность смены"] = "-"
 
-    # 4) Округление
     for col in ["В час", "Средний совокупный доход при графике 2/2 по 12 часов", "ЗП от (т.р.)", "ЗП до (т.р.)"]:
         if col in df.columns:
             df[col] = df[col].round(2)
