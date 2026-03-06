@@ -501,12 +501,18 @@ def _slugify(s: str) -> str:
     return s
 
 
-TEMPLATE_COLS = [
+EXPORT_COLS = [
     "Должность","Работодатель","Дата публикации",
     "ЗП от (т.р.)","ЗП до (т.р.)",
-    "Средний совокупный доход при графике 2/2 по 12 часов","В час","Ставка (расчётная) в час, ₽","Длительность \nсмены",
-    "shift_duration_hours","shift_duration_source","shift_duration_confidence","hourly_rate","hourly_rate_method","parsing_notes",
-    "Требуемый\nопыт","Труд-во","График","Частота \nвыплат","Льготы","Обязаности","working_hours","Ссылка","Примечание"
+    "Средний совокупный доход при графике 2/2 по 12 часов","В час","Длительность смены",
+    "Требуемый опыт","Труд-во","График","Частота выплат","Льготы","Обязаности","Ссылка","Примечание"
+]
+
+# Internal columns (superset of EXPORT_COLS, includes debug/technical fields)
+TEMPLATE_COLS = EXPORT_COLS + [
+    "Ставка (расчётная) в час, ₽",
+    "shift_duration_hours","shift_duration_source","shift_duration_confidence",
+    "hourly_rate","hourly_rate_method","parsing_notes","working_hours",
 ]
 
 GROSS_NOTE_TEXT = "До вычета налога"
@@ -1056,6 +1062,16 @@ DEFAULT_SHIFT_HOURS = 12.0
 SHIFTS_PER_MONTH_2X2 = 15.0
 _MONTHLY_THRESHOLD_TR = 15.0  # >=15 т.р. считаем месячной ставкой
 
+SCHEDULE_SHIFTS_PER_MONTH = {
+    "5/2": 22.0,
+    "2/2": 15.0,
+    "3/3": 15.0,
+    "4/3": 17.5,
+    "6/1": 26.0,
+    "1/3": 7.5,
+    "7/0": 30.0,
+}
+
 
 def _avg_salary_thousand(*values: Optional[float]) -> Optional[float]:
     vals = []
@@ -1078,6 +1094,7 @@ def derive_hour_shift_from_salary(
     sal_from_tr: Optional[float],
     sal_to_tr: Optional[float],
     shift_hours: Optional[float],
+    schedule: Optional[str] = None,
 ) -> Tuple[Optional[float], Optional[float], float]:
     """Оценить часовую ставку и оплату смены по ЗП."""
 
@@ -1086,10 +1103,14 @@ def derive_hour_shift_from_salary(
     if avg_thousand is None:
         return None, None, eff_hours
 
+    # Use schedule-specific shifts/month when available
+    sched_key = (schedule or "").split(",")[0].strip() if schedule else ""
+    shifts_per_month = SCHEDULE_SHIFTS_PER_MONTH.get(sched_key, SHIFTS_PER_MONTH_2X2)
+
     avg_rub = avg_thousand * 1000.0
     denom = eff_hours
     if avg_thousand >= _MONTHLY_THRESHOLD_TR:
-        denom *= SHIFTS_PER_MONTH_2X2
+        denom *= shifts_per_month
     if denom <= 0:
         return None, None, eff_hours
 
@@ -1110,6 +1131,11 @@ def _words_pair(t: str) -> Optional[str]:
     if a and b: return f"{a}/{b}"
     return None
 
+_SCHEDULE_NAME_MAP = {
+    "полный день": "5/2",
+    "полная занятость": "5/2",
+}
+
 def extract_schedule_strict(text: str, sched_src: Optional[str]=None) -> Optional[str]:
     t = (text or "") + " " + (sched_src or "")
     t = t.lower().replace("–","-").replace("х","x")
@@ -1124,7 +1150,14 @@ def extract_schedule_strict(text: str, sched_src: Optional[str]=None) -> Optiona
     for v in vals:
         if v not in seen:
             seen.add(v); out.append(v)
-    return ", ".join(out) if out else None
+    if out:
+        return ", ".join(out)
+    # Fallback: map well-known HH schedule names when no numeric pattern found
+    if sched_src:
+        mapped = _SCHEDULE_NAME_MAP.get(sched_src.lower().strip())
+        if mapped:
+            return mapped
+    return None
 
 def _extract_schedule_from_html(url: str, timeout: float = 15.0) -> Tuple[Optional[str], Optional[float]]:
     if not (_HAS_BS4 and isinstance(url,str) and url.startswith("http")):
@@ -1940,7 +1973,7 @@ def map_hh(items: List[Dict[str, Any]], pause_detail: float = 0.2) -> List[Dict[
         descr_txt = _strip_html(descr_html) or short
         published = _iso_date(v.get("published_at") or det.get("published_at"))
         hour, shift = extract_comp(descr_txt)
-        graph = extract_schedule_strict(descr_txt, sched_src=None)
+        graph = extract_schedule_strict(descr_txt, sched_src=sched_src)
 
         wh_contexts: List[WorkingHoursContext] = []
         if descr_txt:
@@ -1966,6 +1999,42 @@ def map_hh(items: List[Dict[str, Any]], pause_detail: float = 0.2) -> List[Dict[
         working_hours = extract_working_hours(wh_contexts)
 
         shift_info = extract_shift_len(descr_txt)
+
+        # Try to extract shift duration from HH API structured fields
+        if (not shift_info or shift_info.hours is None) and isinstance(det, dict):
+            wt_intervals = det.get("working_time_intervals")
+            if isinstance(wt_intervals, list):
+                for wti in wt_intervals:
+                    wti_name = (wti.get("name") or "") if isinstance(wti, dict) else str(wti)
+                    wti_info = extract_shift_len(wti_name)
+                    if wti_info and wti_info.hours:
+                        shift_info = ShiftLength(
+                            hours=float(wti_info.hours),
+                            raw=f"api:{wti_name}",
+                            source="structured_field",
+                            confidence="high",
+                            ambiguous=False,
+                            matches=[float(wti_info.hours)],
+                            notes=["shift duration from HH API working_time_intervals"],
+                        )
+                        break
+            wt_modes = det.get("working_time_modes")
+            if (not shift_info or shift_info.hours is None) and isinstance(wt_modes, list):
+                for wtm in wt_modes:
+                    wtm_name = (wtm.get("name") or "") if isinstance(wtm, dict) else str(wtm)
+                    wtm_info = extract_shift_len(wtm_name)
+                    if wtm_info and wtm_info.hours:
+                        shift_info = ShiftLength(
+                            hours=float(wtm_info.hours),
+                            raw=f"api:{wtm_name}",
+                            source="structured_field",
+                            confidence="high",
+                            ambiguous=False,
+                            matches=[float(wtm_info.hours)],
+                            notes=["shift duration from HH API working_time_modes"],
+                        )
+                        break
+
         if (not graph or not shift_info or shift_info.hours is None) and isinstance(url, str) and url.startswith("http"):
             g_html, hours_html = _extract_schedule_from_html(url)
             if not graph and g_html:
@@ -1983,6 +2052,17 @@ def map_hh(items: List[Dict[str, Any]], pause_detail: float = 0.2) -> List[Dict[
 
         hour, hourly_method, hourly_notes = compute_hourly_rate(hour, shift, shift_info)
         shift_len = float(shift_info.hours) if (shift_info and isinstance(shift_info.hours, (int, float))) else None
+
+        # Fallback: derive hourly rate from monthly salary when no explicit rate found
+        if hour is None and (sal_from_tr or sal_to_tr):
+            hour_derived, shift12_derived, _ = derive_hour_shift_from_salary(
+                sal_from_tr, sal_to_tr, shift_len, schedule=graph
+            )
+            if hour_derived:
+                hour = hour_derived
+                hourly_method = "derived:salary_based"
+                hourly_notes.append(f"derived from monthly salary (schedule={graph}, shift={shift_len}h)")
+
         shift12_out = shift if (shift and shift_len == 12.0) else (hour * 12.0 if hour else None)
         parsing_notes = []
         if shift_info and shift_info.notes:
@@ -2026,17 +2106,17 @@ def map_hh(items: List[Dict[str, Any]], pause_detail: float = 0.2) -> List[Dict[
             "ЗП до (т.р.)": sal_to_tr,
             "Средний совокупный доход при графике 2/2 по 12 часов": shift12_out,
             "В час": hour,
-            "Длительность \nсмены": shift_len,
+            "Длительность смены": shift_len,
             "shift_duration_hours": shift_len,
             "shift_duration_source": (shift_info.source if shift_info else "unresolved"),
             "shift_duration_confidence": (shift_info.confidence if shift_info else "low"),
             "hourly_rate": hour,
             "hourly_rate_method": hourly_method,
             "parsing_notes": " | ".join(parsing_notes) if parsing_notes else None,
-            "Требуемый\nопыт": exp or None,
+            "Требуемый опыт": exp or None,
             "Труд-во": employ,
             "График": graph,
-            "Частота \nвыплат": pay,
+            "Частота выплат": pay,
             "Льготы": bens,
             "Обязаности": duties,
             "Ссылка": url,
@@ -2114,11 +2194,11 @@ def map_gr(rows_in):
                     "ЗП до (т.р.)": None,
                     "Средний совокупный доход при графике 2/2 по 12 часов": None,
                     "В час": None,
-                    "Длительность \nсмены": None,
-                    "Требуемый\nопыт": None,
+                    "Длительность смены": None,
+                    "Требуемый опыт": None,
                     "Труд-во": None,
                     "График": None,
-                    "Частота \nвыплат": None,
+                    "Частота выплат": None,
                     "Льготы": None,
                     "Обязаности": None,
                     "Ссылка": u,
@@ -2241,17 +2321,17 @@ def map_gr(rows_in):
             "ЗП до (т.р.)": sal_to,
             "Средний совокупный доход при графике 2/2 по 12 часов": shift12_out,
             "В час": hour,
-            "Длительность \nсмены": shift_len,
+            "Длительность смены": shift_len,
             "shift_duration_hours": shift_len,
             "shift_duration_source": (shift_info.source if shift_info else "unresolved"),
             "shift_duration_confidence": (shift_info.confidence if shift_info else "low"),
             "hourly_rate": hour,
             "hourly_rate_method": hourly_method,
             "parsing_notes": " | ".join(parsing_notes) if parsing_notes else None,
-            "Требуемый\nопыт": exp,
+            "Требуемый опыт": exp,
             "Труд-во": employ,
             "График": graph,
-            "Частота \nвыплат": pay,
+            "Частота выплат": pay,
             "Льготы": bens,
             "Обязаности": duties,
             "Ссылка": u,
@@ -2507,17 +2587,17 @@ def map_avito(rows_in: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "ЗП до (т.р.)": sal_to,
             "Средний совокупный доход при графике 2/2 по 12 часов": shift12_out,
             "В час": hour,
-            "Длительность \nсмены": shift_len,
+            "Длительность смены": shift_len,
             "shift_duration_hours": shift_len,
             "shift_duration_source": (shift_info.source if shift_info else "unresolved"),
             "shift_duration_confidence": (shift_info.confidence if shift_info else "low"),
             "hourly_rate": hour,
             "hourly_rate_method": hourly_method,
             "parsing_notes": " | ".join(parsing_notes) if parsing_notes else None,
-            "Требуемый\nопыт": exp,
+            "Требуемый опыт": exp,
             "Труд-во": employ,
             "График": graph,
-            "Частота \nвыплат": pay,
+            "Частота выплат": pay,
             "Льготы": bens,
             "Обязаности": duties,
             "Ссылка": u,
@@ -2854,17 +2934,17 @@ def _legacy_row_from_avito_record(rec: Dict[str, Any]) -> Dict[str, Any]:
         "Средний совокупный доход при графике 2/2 по 12 часов": shift12,
         "В час": hour_val,
         "Ставка (расчётная) в час, ₽": hour_val,
-        "Длительность \nсмены": shift_len_val,
+        "Длительность смены": shift_len_val,
         "shift_duration_hours": shift_len_val,
         "shift_duration_source": shift_info.source,
         "shift_duration_confidence": shift_info.confidence,
         "hourly_rate": hour_val,
         "hourly_rate_method": hourly_method,
         "parsing_notes": " | ".join(hourly_notes) if hourly_notes else None,
-        "Требуемый\nопыт": exp_value,
+        "Требуемый опыт": exp_value,
         "Труд-во": rec.get("employment_type"),
         "График": schedule,
-        "Частота \nвыплат": None,
+        "Частота выплат": None,
         "Льготы": benefits_str,
         "Обязаности": rec.get("duties_raw"),
         "working_hours": working_hours,
@@ -2875,9 +2955,11 @@ def _legacy_row_from_avito_record(rec: Dict[str, Any]) -> Dict[str, Any]:
 
 def to_df(rows: List[Dict[str, Any]]) -> pd.DataFrame:
     df = pd.DataFrame(rows)
-    for c in TEMPLATE_COLS:
+    # Ensure all export columns exist
+    for c in EXPORT_COLS:
         if c not in df.columns: df[c] = None
-    df = df[TEMPLATE_COLS]
+    # Keep only user-facing columns for export
+    df = df[EXPORT_COLS]
     if "Примечание" in df.columns:
         df["Примечание"] = df["Примечание"].fillna("")
     if "Ссылка" in df.columns:
@@ -3072,8 +3154,8 @@ def main():
     except Exception as e:
         print(f"Failed to write rate JSON: {e}")
 
-    # XLSX для просмотра (без \n в заголовках)
-    df_x = df.rename(columns=lambda c: c.replace("\n", " "))
+    # XLSX для просмотра (только пользовательские столбцы)
+    df_x = df[[c for c in EXPORT_COLS if c in df.columns]]
     df_x.to_excel(xlsx_path, index=False)
     print(f"Wrote {len(df_x)} rows -> {xlsx_path}")
 
