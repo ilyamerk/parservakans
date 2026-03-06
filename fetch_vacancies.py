@@ -1,5 +1,6 @@
 import argparse
 import dataclasses
+import logging
 import re
 import time
 from pathlib import Path
@@ -7,11 +8,29 @@ from typing import Any, Optional
 
 import pandas as pd
 import requests
+from requests import Response
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 EXPORT_DIR = Path("Exports")
 EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 
 HH_API = "https://api.hh.ru/vacancies"
+
+logger = logging.getLogger(__name__)
+
+
+@dataclasses.dataclass(frozen=True)
+class HHHTTPConfig:
+    connect_timeout: float = 5.0
+    read_timeout: float = 15.0
+    max_retries: int = 4
+    backoff_factor: float = 0.6
+    pause_between_requests: float = 0.2
+
+
+DEFAULT_HTTP_CONFIG = HHHTTPConfig()
+RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
 @dataclasses.dataclass
@@ -34,7 +53,83 @@ class ShiftLength:
 def _get_sess() -> requests.Session:
     sess = requests.Session()
     sess.headers.update({"User-Agent": "parservakans/1.0"})
+    adapter = HTTPAdapter(pool_connections=8, pool_maxsize=8, max_retries=Retry(total=0, redirect=0))
+    sess.mount("https://", adapter)
+    sess.mount("http://", adapter)
     return sess
+
+
+def _request_json_with_retries(
+    sess: requests.Session,
+    url: str,
+    *,
+    params: Optional[dict[str, Any]] = None,
+    config: HHHTTPConfig = DEFAULT_HTTP_CONFIG,
+    stage: str,
+) -> tuple[Optional[dict[str, Any]], int, Optional[str]]:
+    last_error: Optional[str] = None
+    for attempt in range(1, config.max_retries + 1):
+        try:
+            resp: Response = sess.get(url, params=params, timeout=(config.connect_timeout, config.read_timeout))
+            if resp.status_code in RETRYABLE_STATUS_CODES:
+                last_error = f"HTTP {resp.status_code}"
+                logger.warning(
+                    "HH API retriable response: stage=%s attempt=%s/%s url=%s params=%s reason=%s",
+                    stage,
+                    attempt,
+                    config.max_retries,
+                    url,
+                    params,
+                    last_error,
+                )
+            elif resp.status_code >= 400:
+                last_error = f"HTTP {resp.status_code}"
+                logger.error(
+                    "HH API non-retriable response: stage=%s url=%s params=%s reason=%s",
+                    stage,
+                    url,
+                    params,
+                    last_error,
+                )
+                return None, attempt, last_error
+            else:
+                return resp.json(), attempt, None
+        except (requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout) as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            logger.warning(
+                "HH API timeout: stage=%s attempt=%s/%s url=%s params=%s reason=%s",
+                stage,
+                attempt,
+                config.max_retries,
+                url,
+                params,
+                last_error,
+            )
+        except requests.exceptions.RequestException as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            logger.warning(
+                "HH API request error: stage=%s attempt=%s/%s url=%s params=%s reason=%s",
+                stage,
+                attempt,
+                config.max_retries,
+                url,
+                params,
+                last_error,
+            )
+
+        if attempt < config.max_retries:
+            sleep_s = config.backoff_factor * (2 ** (attempt - 1))
+            time.sleep(sleep_s)
+
+    logger.error(
+        "HH API final failure: stage=%s attempts=%s url=%s params=%s final_reason=%s",
+        stage,
+        config.max_retries,
+        url,
+        params,
+        last_error,
+    )
+    return None, config.max_retries, last_error
 
 
 def hh_search(
@@ -45,31 +140,68 @@ def hh_search(
     pause: float = 0.2,
     search_in: str = "name",
     start_page: int = 0,
+    timeout: float = 15,
+    config: Optional[HHHTTPConfig] = None,
 ) -> list[dict[str, Any]]:
+    http_config = config or HHHTTPConfig(read_timeout=timeout, pause_between_requests=pause)
     sess = _get_sess()
     items: list[dict[str, Any]] = []
+    page_errors: list[dict[str, Any]] = []
     for page in range(start_page, start_page + pages):
-        resp = sess.get(
+        params = {
+            "text": query,
+            "area": area,
+            "page": page,
+            "per_page": per_page,
+            "search_field": search_in,
+        }
+        payload, attempts, error_reason = _request_json_with_retries(
+            sess,
             HH_API,
-            params={
-                "text": query,
-                "area": area,
-                "page": page,
-                "per_page": per_page,
-                "search_field": search_in,
-            },
-            timeout=15,
+            params=params,
+            config=http_config,
+            stage="поиск вакансий",
         )
-        if getattr(resp, "status_code", 500) >= 400:
-            break
-        payload = resp.json()
+        if payload is None:
+            page_errors.append({"page": page, "attempts": attempts, "reason": error_reason})
+            logger.error(
+                "Не удалось загрузить страницу поиска HH, страница пропущена: page=%s attempts=%s reason=%s",
+                page,
+                attempts,
+                error_reason,
+            )
+            continue
+
         page_items = payload.get("items", []) or []
         items.extend(page_items)
         if page >= int(payload.get("pages", 1)) - 1:
             break
-        if pause:
-            time.sleep(pause)
+
+        if http_config.pause_between_requests:
+            time.sleep(http_config.pause_between_requests)
+
+    if not items and page_errors:
+        raise RuntimeError(
+            "HH API временно недоступен: не удалось загрузить страницы поиска. "
+            "Попробуйте позже или уменьшите нагрузку (pages/per_page/workers)."
+        )
     return items
+
+
+def load_hh_vacancy_details(
+    vacancy_id: str,
+    *,
+    sess: Optional[requests.Session] = None,
+    config: HHHTTPConfig = DEFAULT_HTTP_CONFIG,
+) -> Optional[dict[str, Any]]:
+    session = sess or _get_sess()
+    payload, _, _ = _request_json_with_retries(
+        session,
+        f"{HH_API}/{vacancy_id}",
+        config=config,
+        stage="загрузка детальной вакансии",
+    )
+    return payload
 
 
 def is_hourly_rate(text: str) -> bool:
@@ -422,7 +554,29 @@ def main() -> None:
     ap.add_argument("--out_csv", default=str(EXPORT_DIR / "raw.csv"))
     args = ap.parse_args()
 
-    hh_items = hh_search(args.query, args.area, args.pages, args.per_page, args.pause, args.search_in)
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+
+    try:
+        hh_items = hh_search(
+            args.query,
+            args.area,
+            args.pages,
+            args.per_page,
+            args.pause,
+            args.search_in,
+            timeout=args.timeout,
+            config=HHHTTPConfig(
+                connect_timeout=min(args.timeout, 6.0),
+                read_timeout=max(args.timeout, 8.0),
+                max_retries=DEFAULT_HTTP_CONFIG.max_retries,
+                backoff_factor=DEFAULT_HTTP_CONFIG.backoff_factor,
+                pause_between_requests=args.pause,
+            ),
+        )
+    except RuntimeError as exc:
+        print(f"Ошибка: {exc}")
+        return
+
     rows = map_hh(hh_items)
 
     if args.role and not args.no_filter:
