@@ -112,13 +112,31 @@ def test_employment_type_tk_gph_and_both():
         ("график 5/2", "5/2"),
         ("работа по графику 2/2", "2/2"),
         ("вахта 15/15", "15/15"),
-        ("сменный график", "сменный"),
-        ("гибкий график", "гибкий"),
+        ("график 2-2", "2/2"),
+        ("работа 2 через 2", "2/2"),
+        ("два через два", "2/2"),
+        ("пятидневка", "5/2"),
+        ("сутки через трое", "1/3"),
+        ("сутки/трое", "1/3"),
+        ("день через день", "1/1"),
+        ("шесть через один", "6/1"),
+        ("четыре через три", "4/3"),
     ],
 )
 def test_extract_schedule(text, expected):
     value, _ = extract_schedule(text)
     assert value == expected
+
+
+def test_extract_schedule_collects_multiple_patterns():
+    value, _ = extract_schedule("Варианты графика: 2/2 или 5-2")
+    assert value == "2/2, 5/2"
+
+
+def test_extract_schedule_keeps_empty_for_generic_keywords():
+    value, source = extract_schedule("гибкий график, удаленно")
+    assert value is None
+    assert source == "unresolved"
 
 
 @pytest.mark.parametrize(
