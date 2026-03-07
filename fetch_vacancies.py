@@ -1135,24 +1135,14 @@ def derive_hour_shift_from_salary(
 
 NUM_WORD = {"сутки":1,"день":1,"один":1,"одна":1,"двое":2,"два":2,"две":2,"трое":3,"три":3,"четверо":4,"четыре":4,"пять":5,"шесть":6,"семь":7}
 SCHED_NUM_RE = re.compile(r"\b([1-9]\d?)\s*[/\-–xх×]\s*([1-9]\d?)\b", re.I)
-def _words_pair(t: str) -> Optional[str]:
-    m = re.search(rf"\b({'|'.join(NUM_WORD)})\s+через\s+({'|'.join(NUM_WORD)})\b", t, re.I)
-    if not m: return None
-    a = NUM_WORD.get(m.group(1).lower()); b = NUM_WORD.get(m.group(2).lower())
-    if a and b: return f"{a}/{b}"
-    return None
-
-_SCHEDULE_NAME_MAP = {
-    "полный день": "5/2",
-    "полная занятость": "5/2",
-    "пятидневка": "5/2",
-    "пятидневная рабочая неделя": "5/2",
-}
+NUM_WORD_RE = "|".join(sorted(NUM_WORD.keys(), key=len, reverse=True))
 
 # Regex-паттерны для распознавания графика из описания вакансии
 _SCHEDULE_TEXT_PATTERNS = [
     (re.compile(r"пятидневк", re.I), "5/2"),
+    (re.compile(r"пятидневн\w*\s+рабоч\w*\s+недел", re.I), "5/2"),
     (re.compile(r"день\s+через\s+день", re.I), "1/1"),
+    (re.compile(r"сутки\s+через\s+тро[её]", re.I), "1/3"),
     (re.compile(r"сутки\s*[/\\]\s*тро[её]", re.I), "1/3"),
 ]
 
@@ -1171,30 +1161,38 @@ def extract_schedule_strict(text: str, sched_src: Optional[str]=None) -> Optiona
     t = (text or "") + " " + (sched_src or "")
     t = t.lower().replace("–","-").replace("х","x")
     vals = []
+
+    def _push(val: str) -> None:
+        if val:
+            vals.append(val)
+
     for m in SCHED_NUM_RE.finditer(t):
-        vals.append(f"{int(m.group(1))}/{int(m.group(2))}")
-    wp = _words_pair(t)
-    if wp: vals.append(wp)
+        _push(f"{int(m.group(1))}/{int(m.group(2))}")
+
+    # "два через два", "шесть через один", "сутки через трое"
+    for m in re.finditer(rf"\b({NUM_WORD_RE})\s+через\s+({NUM_WORD_RE})\b", t, re.I):
+        a = NUM_WORD.get(m.group(1).lower())
+        b = NUM_WORD.get(m.group(2).lower())
+        if a and b:
+            _push(f"{a}/{b}")
+
     # "3 через 3", "2 через 2" — цифры через "через"
     for m in re.finditer(r"\b([1-9]\d?)\s+через\s+([1-9]\d?)\b", t, re.I):
-        vals.append(f"{int(m.group(1))}/{int(m.group(2))}")
+        _push(f"{int(m.group(1))}/{int(m.group(2))}")
     for m in re.finditer(r"\bвахт\w*\s*([1-9]\d?)\s*[/\-–xх×]\s*([1-9]\d?)\b", t, re.I):
-        vals.append(f"{int(m.group(1))}/{int(m.group(2))}")
+        _push(f"{int(m.group(1))}/{int(m.group(2))}")
+
+    # Дополнительные текстовые формулировки
+    for pat, sched_val in _SCHEDULE_TEXT_PATTERNS:
+        if pat.search(t):
+            _push(sched_val)
+
     out, seen = [], set()
     for v in vals:
         if v not in seen:
             seen.add(v); out.append(v)
     if out:
         return ", ".join(out)
-    # Fallback: regex text patterns (пятидневка, день через день, сутки/трое)
-    for pat, sched_val in _SCHEDULE_TEXT_PATTERNS:
-        if pat.search(t):
-            return sched_val
-    # Fallback: map well-known HH schedule names when no numeric pattern found
-    if sched_src:
-        mapped = _SCHEDULE_NAME_MAP.get(sched_src.lower().strip())
-        if mapped:
-            return mapped
     return None
 
 def _extract_schedule_from_html(url: str, timeout: float = 15.0) -> Tuple[Optional[str], Optional[float]]:
@@ -1226,7 +1224,7 @@ def _extract_schedule_from_html(url: str, timeout: float = 15.0) -> Tuple[Option
         m = SCHED_NUM_RE.search(blob)
         if m: graph = f"{int(m.group(1))}/{int(m.group(2))}"
         if not graph:
-            graph = _words_pair(blob)
+            graph = extract_schedule_strict(blob, sched_src=None)
         mh = re.search(r"(?:длительность|рабочие\s*часы|смена)\D{0,12}(\d{1,2})\s*час", blob)
         hours = float(mh.group(1)) if mh else None
         return graph, hours
