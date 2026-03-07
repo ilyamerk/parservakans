@@ -51,10 +51,13 @@ def _ensure_list(value: Optional[Iterable[str] | str]) -> List[str]:
 
 def _load_schedule_defaults(raw: Optional[dict]) -> Dict[str, Dict[str, float]]:
     defaults: Dict[str, Dict[str, float]] = {
-        "5/2": {"shifts_per_month": 23.0, "hours_per_shift": 8.0},
+        "5/2": {"shifts_per_month": 22.0, "hours_per_shift": 8.0},
         "2/2": {"shifts_per_month": 15.0, "hours_per_shift": 12.0},
         "3/3": {"shifts_per_month": 15.0, "hours_per_shift": 12.0},
+        "4/3": {"shifts_per_month": 17.0, "hours_per_shift": 12.0},
+        "4/4": {"shifts_per_month": 15.0, "hours_per_shift": 12.0},
         "6/1": {"shifts_per_month": 26.0, "hours_per_shift": 8.0},
+        "1/3": {"shifts_per_month": 8.0, "hours_per_shift": 12.0},
     }
     if not raw:
         return defaults
@@ -390,10 +393,10 @@ def _convert_salary(
         notes.append("ЗП до < 0 — очищено")
 
     if salary_from_thousands is not None and hours_per_shift and shifts_per_month:
-        hourly_rate = (salary_from_thousands * 1000.0) / (hours_per_shift * shifts_per_month)
+        hourly_rate = round((salary_from_thousands / hours_per_shift / shifts_per_month) * 1000.0, 1)
 
     if hourly_rate is not None:
-        shift_income = hourly_rate * 12.0
+        shift_income = round(hourly_rate * 12.0, 1)
     elif shift_income is None and salary_from_val and period in {"per_shift", "per_day"}:
         shift_income = salary_from_val
 
