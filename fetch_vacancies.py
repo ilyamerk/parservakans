@@ -1156,6 +1156,17 @@ _SCHEDULE_TEXT_PATTERNS = [
     (re.compile(r"сутки\s*[/\\]\s*тро[её]", re.I), "1/3"),
 ]
 
+_VALID_SCHEDULE_RE = re.compile(r"^\d+/\d+(?:\s*,\s*\d+/\d+)*$")
+
+def _sanitize_schedule(val: Optional[str]) -> Optional[str]:
+    """Оставляет только значения в формате X/Y (через запятую), иначе None."""
+    if not val:
+        return None
+    val = val.strip()
+    if _VALID_SCHEDULE_RE.match(val):
+        return val
+    return None
+
 def extract_schedule_strict(text: str, sched_src: Optional[str]=None) -> Optional[str]:
     t = (text or "") + " " + (sched_src or "")
     t = t.lower().replace("–","-").replace("х","x")
@@ -2166,7 +2177,7 @@ def map_hh(items: List[Dict[str, Any]], pause_detail: float = 0.2) -> List[Dict[
             "parsing_notes": " | ".join(parsing_notes) if parsing_notes else None,
             "Требуемый опыт": exp or None,
             "Труд-во": employ,
-            "График": graph,
+            "График": _sanitize_schedule(graph),
             "Частота выплат": pay,
             "Льготы": bens,
             "Обязаности": duties,
@@ -2393,7 +2404,7 @@ def map_gr(rows_in):
             "parsing_notes": " | ".join(parsing_notes) if parsing_notes else None,
             "Требуемый опыт": exp,
             "Труд-во": employ,
-            "График": graph,
+            "График": _sanitize_schedule(graph),
             "Частота выплат": pay,
             "Льготы": bens,
             "Обязаности": duties,
@@ -2659,7 +2670,7 @@ def map_avito(rows_in: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "parsing_notes": " | ".join(parsing_notes) if parsing_notes else None,
             "Требуемый опыт": exp,
             "Труд-во": employ,
-            "График": graph,
+            "График": _sanitize_schedule(graph),
             "Частота выплат": pay,
             "Льготы": bens,
             "Обязаности": duties,
@@ -3020,7 +3031,7 @@ def _legacy_row_from_avito_record(rec: Dict[str, Any]) -> Dict[str, Any]:
         "parsing_notes": " | ".join(hourly_notes) if hourly_notes else None,
         "Требуемый опыт": exp_value,
         "Труд-во": rec.get("employment_type"),
-        "График": schedule,
+        "График": _sanitize_schedule(schedule),
         "Частота выплат": None,
         "Льготы": benefits_str,
         "Обязаности": rec.get("duties_raw"),
