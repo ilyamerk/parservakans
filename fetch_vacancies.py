@@ -419,20 +419,41 @@ def _extract_days_per_month_from_text(text: str) -> Optional[float]:
 
 def extract_schedule(text: str, schedule_name: str = "") -> tuple[Optional[str], str]:
     combined = " ".join(filter(None, [text, schedule_name])).lower()
-    m = re.search(r"\b(\d{1,2})\s*/\s*(\d{1,2})\b", combined)
-    if m:
-        return _normalize_schedule_token(int(m.group(1)), int(m.group(2))), "description_or_structured:pattern"
+    found: list[str] = []
+
+    def add_pattern(first: int, second: int) -> None:
+        token = _normalize_schedule_token(first, second)
+        if token not in found:
+            found.append(token)
+
+    for m in re.finditer(r"\b(\d{1,2})\s*/\s*(\d{1,2})\b", combined):
+        add_pattern(int(m.group(1)), int(m.group(2)))
+    for m in re.finditer(r"\b(\d{1,2})\s*-\s*(\d{1,2})\b", combined):
+        add_pattern(int(m.group(1)), int(m.group(2)))
+    for m in re.finditer(r"\b(\d{1,2})\s*через\s*(\d{1,2})\b", combined):
+        add_pattern(int(m.group(1)), int(m.group(2)))
+
+    text_schedule_patterns = [
+        (r"\b(?:два|2)\s*через\s*(?:два|2)\b", "2/2"),
+        (r"\b(?:пять|5)\s*через\s*(?:два|2)\b", "5/2"),
+        (r"\bпятидневк\w*\b", "5/2"),
+        (r"\b(?:три|3)\s*через\s*(?:три|3)\b", "3/3"),
+        (r"\b(?:сутки\s*через\s*трое|сутки\s*/\s*трое)\b", "1/3"),
+        (r"\bдень\s*через\s*день\b", "1/1"),
+        (r"\b(?:шесть|6)\s*через\s*(?:один|1)\b", "6/1"),
+        (r"\b(?:четыре|4)\s*через\s*(?:три|3)\b", "4/3"),
+    ]
+    for pattern, token in text_schedule_patterns:
+        if re.search(pattern, combined):
+            if token not in found:
+                found.append(token)
+
+    if found:
+        return ", ".join(found), "description_or_structured:pattern"
+
     m = re.search(r"\b(\d{1,2})\s*[/-]\s*дневк", combined)
     if m:
         return _normalize_schedule_token(int(m.group(1)), 2), "description_or_structured:pattern"
-    if "сменн" in combined:
-        return "сменный", "description_or_structured:keyword"
-    if "гибк" in combined:
-        return "гибкий", "description_or_structured:keyword"
-    if re.search(r"(удал[её]н|дистанционн|remote)", combined):
-        return "удалённо", "description_or_structured:keyword"
-    if re.search(r"(вахт\w*)", combined):
-        return "вахта", "description_or_structured:keyword"
     return None, "unresolved"
 
 
