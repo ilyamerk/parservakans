@@ -184,16 +184,10 @@ def _normalize_schedule(raw: Optional[str]) -> str:
     if not text:
         return ""
     text_low = text.lower()
-    if "вахт" in text_low:
-        return "вахта"
     match = re.search(r"(\d+\s*/\s*\d+)", text_low)
     if match:
         return match.group(1).replace(" ", "")
-    if "гибк" in text_low:
-        return "гибкий"
-    if "смен" in text_low and "сут" in text_low:
-        return "сутки/сутки"
-    return text
+    return ""
 
 
 def _infer_format_work(text_chunks: Iterable[str], schedule: str) -> str:

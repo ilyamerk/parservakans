@@ -390,10 +390,6 @@ def _normalize_schedule_hint(text: Optional[str]) -> Optional[str]:
     m = re.search(r"(\d+\/\d+)", text)
     if m:
         return m.group(1)
-    if re.search(r"вахт", text, re.IGNORECASE):
-        return "вахта"
-    if re.search(r"гибк", text, re.IGNORECASE):
-        return "гибкий график"
     return None
 
 
