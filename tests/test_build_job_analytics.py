@@ -47,7 +47,14 @@ def test_write_excel_creates_rates_sheet(tmp_path):
 
 
 def test_write_excel_strips_illegal_xml_control_chars(tmp_path):
-    pass
+    bad_text = "Поварна смену"
+    df = pd.DataFrame([{"Должность": bad_text, "Ссылка": "https://example.com"}])
+
+    out_path = tmp_path / "illegal_chars.xlsx"
+    write_excel(df, out_path)
+
+    restored = pd.read_excel(out_path, sheet_name="Данные")
+    assert restored.loc[0, "Должность"] == "Поварна смену"
 
 
 def test_compute_metrics_uses_monthly_formula_with_schedule_mapping():
@@ -65,11 +72,13 @@ def test_compute_metrics_uses_monthly_formula_with_schedule_mapping():
 
     result = compute_metrics(df)
 
-    assert result.loc[0, "В час"] == 409.09
-    assert result.loc[0, "Средний совокупный доход при графике 2/2 по 12 часов"] == 4909.09
+    # (90 / 10 / 22) * 1000 = 409.1 (rounded to 1 decimal)
+    assert result.loc[0, "В час"] == 409.1
+    assert result.loc[0, "Средний совокупный доход при графике 2/2 по 12 часов"] == 4909.1
 
 
-def test_compute_metrics_uses_default_22_shifts_for_unknown_schedule():
+def test_compute_metrics_skips_unknown_schedule():
+    """Unknown schedule should not be calculated — hourly rate stays empty."""
     df = pd.DataFrame(
         [
             {
@@ -84,13 +93,5 @@ def test_compute_metrics_uses_default_22_shifts_for_unknown_schedule():
 
     result = compute_metrics(df)
 
-    assert result.loc[0, "В час"] == 500.0
-    assert result.loc[0, "Средний совокупный доход при графике 2/2 по 12 часов"] == 6000.0
-    bad_text = "Поварна смену"
-    df = pd.DataFrame([{"Должность": bad_text, "Ссылка": "https://example.com"}])
-
-    out_path = tmp_path / "illegal_chars.xlsx"
-    write_excel(df, out_path)
-
-    restored = pd.read_excel(out_path, sheet_name="Данные")
-    assert restored.loc[0, "Должность"] == "Поварна смену"
+    assert pd.isna(result.loc[0, "В час"])
+    assert pd.isna(result.loc[0, "Средний совокупный доход при графике 2/2 по 12 часов"])

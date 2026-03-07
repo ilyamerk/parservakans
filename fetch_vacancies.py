@@ -1063,11 +1063,12 @@ SHIFTS_PER_MONTH_2X2 = 15.0
 _MONTHLY_THRESHOLD_TR = 15.0  # >=15 т.р. считаем месячной ставкой
 
 SCHEDULE_SHIFTS_PER_MONTH = {
-    "5/2": 21.0,
+    "5/2": 22.0,
     "2/2": 15.0,
     "3/3": 15.0,
-    "4/3": 13.0,
-    "6/1": 22.0,
+    "4/3": 17.0,
+    "4/4": 15.0,
+    "6/1": 26.0,
     "1/3": 8.0,
     "1/1": 15.0,
     "7/0": 30.0,
@@ -1076,11 +1077,6 @@ SCHEDULE_SHIFTS_PER_MONTH = {
 SCHEDULE_DEFAULT_HOURS = {
     "5/2": 8.0,
     "2/2": 12.0,
-    "3/3": 12.0,
-    "1/3": 12.0,
-    "1/1": 12.0,
-    "6/1": 8.0,
-    "4/3": 12.0,
 }
 
 
@@ -1107,30 +1103,47 @@ def derive_hour_shift_from_salary(
     shift_hours: Optional[float],
     schedule: Optional[str] = None,
 ) -> Tuple[Optional[float], Optional[float], float]:
-    """Оценить часовую ставку и оплату смены по ЗП."""
+    """Оценить часовую ставку и оплату смены по ЗП.
 
-    eff_hours = shift_hours if isinstance(shift_hours, (int, float)) and shift_hours > 0 else DEFAULT_SHIFT_HOURS
-    avg_thousand = _avg_salary_thousand(sal_from_tr, sal_to_tr)
-    if avg_thousand is None:
+    Формула: (ЗП от / длительность смены / кол-во смен) × 1000
+    ЗП от хранится в тысячах рублей.
+    """
+
+    sched_key = (schedule or "").split(",")[0].strip() if schedule else ""
+
+    # Determine shift hours: explicit > schedule default > give up
+    if isinstance(shift_hours, (int, float)) and shift_hours > 0:
+        eff_hours = shift_hours
+    elif sched_key in SCHEDULE_DEFAULT_HOURS:
+        eff_hours = SCHEDULE_DEFAULT_HOURS[sched_key]
+    else:
+        return None, None, DEFAULT_SHIFT_HOURS
+
+    # Need sal_from to compute
+    if sal_from_tr is None:
+        return None, None, eff_hours
+    try:
+        sal_val = float(sal_from_tr)
+    except (TypeError, ValueError):
+        return None, None, eff_hours
+    if sal_val <= 0:
         return None, None, eff_hours
 
-    # Use schedule-specific shifts/month when available
-    sched_key = (schedule or "").split(",")[0].strip() if schedule else ""
-    shifts_per_month = SCHEDULE_SHIFTS_PER_MONTH.get(sched_key, SHIFTS_PER_MONTH_2X2)
+    # Schedule must be recognized
+    shifts_per_month = SCHEDULE_SHIFTS_PER_MONTH.get(sched_key)
+    if shifts_per_month is None:
+        return None, None, eff_hours
 
-    avg_rub = avg_thousand * 1000.0
-    denom = eff_hours
-    if avg_thousand >= _MONTHLY_THRESHOLD_TR:
-        denom *= shifts_per_month
+    denom = eff_hours * shifts_per_month
     if denom <= 0:
         return None, None, eff_hours
 
-    hour = avg_rub / denom
+    hour = (sal_val / eff_hours / shifts_per_month) * 1000.0
     if hour <= 0:
         return None, None, eff_hours
 
-    hour = round(hour, 2)
-    shift_val = round(hour * eff_hours, 2)
+    hour = round(hour, 1)
+    shift_val = round(hour * eff_hours, 1)
     return hour, shift_val, eff_hours
 
 NUM_WORD = {"сутки":1,"день":1,"один":1,"одна":1,"двое":2,"два":2,"две":2,"трое":3,"три":3,"четверо":4,"четыре":4,"пять":5,"шесть":6,"семь":7}

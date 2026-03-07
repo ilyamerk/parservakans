@@ -101,10 +101,16 @@ SCHEDULE_SHIFTS_PER_MONTH = {
     "5/2": 22.0,
     "2/2": 15.0,
     "3/3": 15.0,
-    "4/3": 17.5,
+    "4/3": 17.0,
+    "4/4": 15.0,
     "6/1": 26.0,
-    "1/3": 7.5,
+    "1/3": 8.0,
     "7/0": 30.0,
+}
+
+SCHEDULE_DEFAULT_HOURS = {
+    "5/2": 8.0,
+    "2/2": 12.0,
 }
 
 # ---- Helpers ----
@@ -167,26 +173,40 @@ def coerce_numbers(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def compute_metrics(df: pd.DataFrame) -> pd.DataFrame:
-    # 1) Если ставка в час отсутствует, считаем только по формуле:
-    #    (ЗП от / (Количество смен * Длительность смены)) * 1000
-    #    где ЗП от в тысячах рублей.
+    # 1) Если ставка в час отсутствует, считаем по формуле:
+    #    (ЗП от / длительность смены / кол-во смен) × 1000
+    #    ЗП от хранится в тысячах рублей.
+    #    Если длительность смены не указана — берём дефолт по графику (только 5/2→8ч, 2/2→12ч).
+    #    Если график не распознан — не рассчитываем.
     schedule_series = df.get("График", pd.Series([""] * len(df), index=df.index)).fillna("").astype(str).str.strip()
-    shifts_per_month = schedule_series.map(lambda s: SCHEDULE_SHIFTS_PER_MONTH.get(s, 22.0))
+    shifts_per_month = schedule_series.map(lambda s: SCHEDULE_SHIFTS_PER_MONTH.get(s, np.nan))
 
     hour_series = df.get("В час", pd.Series(np.nan, index=df.index))
     salary_from_series = df.get("ЗП от (т.р.)", pd.Series(np.nan, index=df.index))
     shift_length_series = df.get("Длительность смены", pd.Series(np.nan, index=df.index))
 
+    # Fill missing shift length from schedule defaults (only 5/2 and 2/2)
+    default_hours = schedule_series.map(lambda s: SCHEDULE_DEFAULT_HOURS.get(s, np.nan))
+    effective_shift = shift_length_series.where(shift_length_series.notna() & (shift_length_series > 0), default_hours)
+
     mask_no_hour = (
         hour_series.isna()
         & salary_from_series.notna()
-        & shift_length_series.notna()
-        & (shift_length_series > 0)
+        & effective_shift.notna()
+        & (effective_shift > 0)
+        & shifts_per_month.notna()
+        & (shifts_per_month > 0)
     )
     df.loc[mask_no_hour, "В час"] = (
         salary_from_series[mask_no_hour]
+        / effective_shift[mask_no_hour]
+        / shifts_per_month[mask_no_hour]
         * 1000.0
-        / (shifts_per_month[mask_no_hour] * shift_length_series[mask_no_hour])
+    )
+
+    # Update shift length column with defaults used for calculation
+    df.loc[mask_no_hour & shift_length_series.isna(), "Длительность смены"] = (
+        default_hours[mask_no_hour & shift_length_series.isna()]
     )
 
     # 2) Рассчитываем "за 12 часов" только если "В час" определено.
@@ -203,10 +223,10 @@ def compute_metrics(df: pd.DataFrame) -> pd.DataFrame:
         mask_len = df["Длительность смены"].isna()
         df.loc[mask_len, "Длительность смены"] = "-"
 
-    # 4) Округление
+    # 4) Округление до 1 десятичного знака
     for col in ["В час", "Средний совокупный доход при графике 2/2 по 12 часов", "ЗП от (т.р.)", "ЗП до (т.р.)"]:
         if col in df.columns:
-            df[col] = df[col].round(2)
+            df[col] = df[col].round(1)
 
     return df
 
