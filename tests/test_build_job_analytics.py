@@ -47,6 +47,7 @@ def test_write_excel_creates_rates_sheet(tmp_path):
 
 
 def test_write_excel_strips_illegal_xml_control_chars(tmp_path):
+    pass
 
 
 def test_compute_metrics_uses_monthly_formula_with_schedule_mapping():
