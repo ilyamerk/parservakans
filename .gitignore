@@ -1,2 +1,6 @@
 __pycache__/
 *.pyc
+Exports/*.csv
+Exports/*.json
+Exports/*.xlsx
+Exports/_debug/
