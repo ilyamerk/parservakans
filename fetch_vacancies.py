@@ -505,7 +505,7 @@ EXPORT_COLS = [
     "Должность","Работодатель","Дата публикации",
     "ЗП от (т.р.)","ЗП до (т.р.)",
     "Средний совокупный доход при графике 2/2 по 12 часов","В час","Длительность смены",
-    "Требуемый опыт","Труд-во","График","Частота выплат","Льготы","Обязаности","Ссылка","Примечание"
+    "Требуемый опыт","Труд-во","График","Частота выплат","Льготы","Обязаности","Ссылка","Примечание","Источник"
 ]
 
 # Internal columns (superset of EXPORT_COLS, includes debug/technical fields)
@@ -2194,6 +2194,7 @@ def map_hh(items: List[Dict[str, Any]], pause_detail: float = 0.2) -> List[Dict[
             "Обязаности": duties,
             "Ссылка": url,
             "Примечание": _humanize_notes(graph, shift_len, gross_note),
+            "Источник": "hh.ru",
             "gross_note": gross_note,
             "__text": f"{descr_txt} {duties or ''}",
             "__rate_text": rate_text,
@@ -2421,6 +2422,7 @@ def map_gr(rows_in):
             "Обязаности": duties,
             "Ссылка": u,
             "Примечание": _humanize_notes(graph, shift_len, gross_note),
+            "Источник": "gorodrabot.ru",
             "gross_note": gross_note,
             "__text": f"{descr} {duties or ''}".strip() or None,
             "__rate_text": rate_text,
@@ -2687,6 +2689,7 @@ def map_avito(rows_in: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "Обязаности": duties,
             "Ссылка": u,
             "Примечание": gross_note,
+            "Источник": "avito.ru",
             "gross_note": gross_note,
             "__text": f"{descr} {duties or ''}".strip() or None,
             "working_hours": working_hours,
@@ -3049,6 +3052,7 @@ def _legacy_row_from_avito_record(rec: Dict[str, Any]) -> Dict[str, Any]:
         "working_hours": working_hours,
         "Ссылка": rec.get("url_detail") or rec.get("url_listing"),
         "Примечание": _humanize_notes(schedule, shift_len_val),
+        "Источник": "avito.ru",
     }
 
 
