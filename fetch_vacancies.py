@@ -3178,11 +3178,19 @@ def main():
                 date_range=getattr(a, "avito_date_range", "") or None,
                 max_pages_per_feed=av_pages,
                 only_with_salary=getattr(a, "avito_only_with_salary", False),
+                request_timeout=20.0,
+                base_delay=4.0,
                 qa_output_dir=EXPORT_DIR / "_avito_qa",
             )
+            print(f"[Avito] config: regions={av_regions} queries={av_queries} pages={av_pages}")
+            from avito_source import _slugify_region
+            print(f"[Avito] region slugs: {[_slugify_region(r) for r in av_regions]}")
             avito_collector = AvitoCollector(config=av_config)
             avito_records = avito_collector.collect()
+            print(f"[Avito] collect() returned {len(avito_records)} records (before legacy conversion)")
+            print(f"[Avito] stats: {avito_collector.stats}")
             rows_avito = [_legacy_row_from_avito_record(r) for r in avito_records]
+            print(f"[Avito] after _legacy_row_from_avito_record: {len(rows_avito)} rows")
 
             # сохранить полные данные в JSON для дальнейшей выгрузки/QA
             try:
