@@ -436,13 +436,32 @@ class AvitoCollector:
 
     def _http_fetch(self, url: str) -> requests.Response:
         session = self._session_with_retries()
+        # Set realistic browser headers to avoid bot detection
+        session.headers.update({
+            "Accept": (
+                "text/html,application/xhtml+xml,application/xml;q=0.9,"
+                "image/avif,image/webp,image/apng,*/*;q=0.8"
+            ),
+            "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Referer": "https://www.avito.ru/",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-User": "?1",
+            "Upgrade-Insecure-Requests": "1",
+            "Cache-Control": "max-age=0",
+            "Connection": "keep-alive",
+        })
+        # Bypass environment proxy for Avito — egress proxies often block it
+        no_proxy = {"http": None, "https": None}
         parsed = urlparse(url)
         self._limiter.wait(parsed.netloc)
         delay = self.config.base_delay
         response = None
         for attempt in range(self.config.max_retries):
             try:
-                response = session.get(url, timeout=self.config.request_timeout)
+                response = session.get(url, timeout=self.config.request_timeout, proxies=no_proxy)
             except requests.RequestException as exc:  # pragma: no cover - network errors
                 LOGGER.warning("Avito fetch failed: %s", exc)
                 time.sleep(delay)
@@ -819,12 +838,29 @@ class AvitoCollector:
         for region, category, query in combos:
             for page in range(1, self.config.max_pages_per_feed + 1):
                 listing_url = self._build_listing_url(region, category, query, page)
+                LOGGER.info("Avito listing URL: %s", listing_url)
+                print(f"[avito] GET {listing_url}")
                 response = self._fetcher(listing_url)
                 if not response or response.status_code != 200:
                     LOGGER.warning("Avito listing fetch failed: %s status=%s", listing_url, getattr(response, "status_code", None))
                     self.stats["detail_fail"] += 1
                     break
                 cards = self._parse_listing(response.text, listing_url)
+                if not cards and page == 1:
+                    # --- debug dump: 0 cards on first page ----------------
+                    debug_dir = Path("Exports/_debug")
+                    debug_dir.mkdir(parents=True, exist_ok=True)
+                    debug_path = debug_dir / "avito_listing_debug.html"
+                    debug_path.write_text(response.text, encoding="utf-8")
+                    print(f"[avito-debug] status_code={response.status_code}")
+                    print(f"[avito-debug] response length={len(response.text)}")
+                    print(f"[avito-debug] first 1000 chars:\n{response.text[:1000]}")
+                    print(f"[avito-debug] HTML saved to {debug_path}")
+                    LOGGER.warning(
+                        "Avito 0 cards on page 1 — debug HTML saved to %s (status=%s, len=%s)",
+                        debug_path, response.status_code, len(response.text),
+                    )
+                    # ------------------------------------------------------
                 if not cards:
                     break
                 for card in cards:
