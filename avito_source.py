@@ -439,6 +439,7 @@ class AvitoCollector:
         parsed = urlparse(url)
         self._limiter.wait(parsed.netloc)
         delay = self.config.base_delay
+        response = None
         for attempt in range(self.config.max_retries):
             try:
                 response = session.get(url, timeout=self.config.request_timeout)
