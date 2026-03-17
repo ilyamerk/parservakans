@@ -4,58 +4,173 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Парсер вакансий</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
-  <div class="bg-glow glow-left" aria-hidden="true"></div>
-  <div class="bg-glow glow-right" aria-hidden="true"></div>
+  <div class="bg-glow glow-1" aria-hidden="true"></div>
+  <div class="bg-glow glow-2" aria-hidden="true"></div>
+  <div class="bg-glow glow-3" aria-hidden="true"></div>
 
   <main class="app-shell">
     <header class="hero">
-      <p class="badge">Parser Vakans · Automation Suite</p>
+      <div class="hero-icon">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+          <line x1="16" y1="13" x2="8" y2="13"/>
+          <line x1="16" y1="17" x2="8" y2="17"/>
+          <polyline points="10 9 9 9 8 9"/>
+        </svg>
+      </div>
       <h1>Парсер вакансий</h1>
-      <p class="subtitle">Собирай вакансии в несколько кликов, выгружай отчёты и анализируй рынок быстрее.</p>
+      <p class="subtitle">Автоматический сбор вакансий с HH.ru, Avito и других площадок. Введите параметры поиска и получите готовый Excel-файл с аналитикой.</p>
     </header>
 
     <section class="panel form-panel">
-      <h2>Параметры запуска</h2>
+      <h2>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--red)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+        Параметры поиска
+      </h2>
       <form action="/run" method="post">
-        <label>Запрос <input name="query" value="Бариста" /></label>
-        <label>Город <input name="city" value="Москва" /></label>
-        <label>HH area <input name="area" type="number" value="1" /></label>
-        <label>Страницы <input name="pages" type="number" value="3" /></label>
-        <label>На страницу <input name="per_page" type="number" value="50" /></label>
-        <label>Пауза <input name="pause" type="number" step="0.1" value="0.9" /></label>
-        <label>Поиск в <input name="search_in" value="name" /></label>
-        <label>Workers <input name="workers" type="number" value="8" /></label>
-        <label>Timeout <input name="timeout" type="number" step="0.1" value="8.0" /></label>
-        <label>Роль-фильтр <input name="role" value="" /></label>
-        <label class="inline"><input type="checkbox" name="no_filter" value="true" /> Без фильтра по роли</label>
-        <button type="submit">Запустить парсер</button>
+        <!-- Hidden defaults -->
+        <input type="hidden" name="area" value="1" />
+        <input type="hidden" name="pause" value="0.9" />
+        <input type="hidden" name="search_in" value="name" />
+        <input type="hidden" name="workers" value="8" />
+        <input type="hidden" name="timeout" value="8.0" />
+        <input type="hidden" name="role" value="" />
+        <input type="hidden" name="no_filter" value="true" />
+
+        <div class="form-grid">
+          <label class="field">
+            <span class="field-label">Вакансия</span>
+            <div class="input-wrap">
+              <svg class="input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>
+              </svg>
+              <input name="query" value="Бариста" placeholder="Название вакансии" required />
+            </div>
+          </label>
+
+          <label class="field">
+            <span class="field-label">Город</span>
+            <div class="input-wrap">
+              <svg class="input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/>
+              </svg>
+              <input name="city" value="Москва" placeholder="Город поиска" required />
+            </div>
+          </label>
+
+          <label class="field">
+            <span class="field-label">Вакансий на странице</span>
+            <div class="input-wrap">
+              <svg class="input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/>
+                <line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
+              </svg>
+              <input name="per_page" type="number" value="50" min="1" max="100" />
+            </div>
+          </label>
+
+          <label class="field">
+            <span class="field-label">Количество страниц</span>
+            <div class="input-wrap">
+              <svg class="input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/>
+                <polyline points="13 2 13 9 20 9"/>
+              </svg>
+              <input name="pages" type="number" value="3" min="1" max="20" />
+            </div>
+          </label>
+        </div>
+
+        <button type="submit">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="5 3 19 12 5 21 5 3"/>
+          </svg>
+          Запустить парсер
+        </button>
       </form>
     </section>
 
     {% if error %}
-      <section class="panel error">
-        <h2>Ошибка</h2>
+      <section class="panel error-panel">
+        <h2>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ff5a70" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>
+          </svg>
+          Ошибка
+        </h2>
         <pre>{{ error }}</pre>
       </section>
     {% endif %}
 
     {% if result %}
       <section class="panel result-panel">
-        <h2>Результат</h2>
-        <p class="run-meta">Run ID: <strong>{{ result.run_id }}</strong> · строк: <strong>{{ result.row_count }}</strong></p>
+        <div class="result-header">
+          <div class="result-info">
+            <h2>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>
+              </svg>
+              Результат
+            </h2>
+            <p class="run-meta">Найдено вакансий: <strong>{{ result.row_count }}</strong></p>
+          </div>
+        </div>
         <div class="downloads">
-          <a href="/download/{{ result.run_id }}/csv">Скачать CSV</a>
-          <a href="/download/{{ result.run_id }}/xlsx">Скачать XLSX</a>
-          <a href="/download/{{ result.run_id }}/docx">Скачать DOCX</a>
+          <a href="/download/{{ result.run_id }}/xlsx" class="dl-btn dl-xlsx">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+              <polyline points="14 2 14 8 20 8"/>
+              <line x1="12" y1="18" x2="12" y2="12"/>
+              <polyline points="9 15 12 18 15 15"/>
+            </svg>
+            <span>
+              <strong>Скачать Excel</strong>
+              <small>Все вакансии в .xlsx</small>
+            </span>
+          </a>
+          <a href="/download/{{ result.run_id }}/docx" class="dl-btn dl-docx">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+              <polyline points="14 2 14 8 20 8"/>
+              <line x1="16" y1="13" x2="8" y2="13"/>
+              <line x1="16" y1="17" x2="8" y2="17"/>
+            </svg>
+            <span>
+              <strong>Скачать отчёт</strong>
+              <small>Аналитика в .docx</small>
+            </span>
+          </a>
+          <a href="/download/{{ result.run_id }}/csv" class="dl-btn dl-csv">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+              <polyline points="14 2 14 8 20 8"/>
+            </svg>
+            <span>
+              <strong>Скачать CSV</strong>
+              <small>Сырые данные</small>
+            </span>
+          </a>
         </div>
       </section>
 
       {% if rows %}
-      <section class="panel">
-        <h3>Предпросмотр (первые {{ rows|length }} строк)</h3>
+      <section class="panel table-panel">
+        <h3>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--red)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/>
+            <line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/>
+          </svg>
+          Предпросмотр <span class="muted">(первые {{ rows|length }} строк)</span>
+        </h3>
         <div class="table-wrap">
           <table>
             <thead>
@@ -79,6 +194,10 @@
       </section>
       {% endif %}
     {% endif %}
+
+    <footer class="footer">
+      <p>Parser Vakans &copy; 2026</p>
+    </footer>
   </main>
 </body>
 </html>
