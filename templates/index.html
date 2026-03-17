@@ -6,198 +6,262 @@
   <title>Парсер вакансий</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
-  <div class="bg-glow glow-1" aria-hidden="true"></div>
-  <div class="bg-glow glow-2" aria-hidden="true"></div>
-  <div class="bg-glow glow-3" aria-hidden="true"></div>
-
   <main class="app-shell">
-    <header class="hero">
-      <div class="hero-icon">
-        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-          <polyline points="14 2 14 8 20 8"/>
-          <line x1="16" y1="13" x2="8" y2="13"/>
-          <line x1="16" y1="17" x2="8" y2="17"/>
-          <polyline points="10 9 9 9 8 9"/>
-        </svg>
+    <div class="card">
+      <div class="card-header">
+        <h1>Парсер вакансий</h1>
+        <p>Сбор вакансий с HH.ru и Avito с аналитикой в Excel</p>
       </div>
-      <h1>Парсер вакансий</h1>
-      <p class="subtitle">Автоматический сбор вакансий с HH.ru, Avito и других площадок. Введите параметры поиска и получите готовый Excel-файл с аналитикой.</p>
-    </header>
 
-    <section class="panel form-panel">
-      <h2>
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--red)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-        </svg>
-        Параметры поиска
-      </h2>
-      <form action="/run" method="post">
-        <!-- Hidden defaults -->
-        <input type="hidden" name="area" value="1" />
-        <input type="hidden" name="pause" value="0.9" />
-        <input type="hidden" name="search_in" value="name" />
-        <input type="hidden" name="workers" value="8" />
-        <input type="hidden" name="timeout" value="8.0" />
-        <input type="hidden" name="role" value="" />
-        <input type="hidden" name="no_filter" value="true" />
-
+      <form id="parseForm">
         <div class="form-grid">
           <label class="field">
             <span class="field-label">Вакансия</span>
-            <div class="input-wrap">
-              <svg class="input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>
-              </svg>
-              <input name="query" value="Бариста" placeholder="Название вакансии" required />
-            </div>
+            <input name="query" value="Бариста" placeholder="Название вакансии" required />
           </label>
 
           <label class="field">
             <span class="field-label">Город</span>
-            <div class="input-wrap">
-              <svg class="input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/>
-              </svg>
-              <input name="city" value="Москва" placeholder="Город поиска" required />
-            </div>
+            <input name="city" value="Москва" placeholder="Город поиска" required />
           </label>
 
           <label class="field">
-            <span class="field-label">Вакансий на странице</span>
-            <div class="input-wrap">
-              <svg class="input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/>
-                <line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
-              </svg>
-              <input name="per_page" type="number" value="50" min="1" max="100" />
-            </div>
+            <span class="field-label">Вакансий на страницу</span>
+            <input name="per_page" type="number" value="50" min="1" max="100" />
           </label>
 
           <label class="field">
             <span class="field-label">Количество страниц</span>
-            <div class="input-wrap">
-              <svg class="input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/>
-                <polyline points="13 2 13 9 20 9"/>
-              </svg>
-              <input name="pages" type="number" value="3" min="1" max="20" />
-            </div>
+            <input name="pages" type="number" value="3" min="1" max="20" />
           </label>
         </div>
 
-        <button type="submit">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <button type="submit" class="btn-submit" id="submitBtn">
+          <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <polygon points="5 3 19 12 5 21 5 3"/>
           </svg>
-          Запустить парсер
+          <span class="spinner"></span>
+          Запустить
         </button>
       </form>
-    </section>
 
-    {% if error %}
-      <section class="panel error-panel">
-        <h2>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ff5a70" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>
+      <!-- Progress -->
+      <div class="progress-section" id="progressSection">
+        <div class="progress-bar-wrap">
+          <div class="progress-bar-fill" id="progressFill"></div>
+        </div>
+        <div class="progress-info">
+          <span class="progress-message" id="progressMsg">Инициализация...</span>
+          <span class="progress-percent" id="progressPct">0%</span>
+        </div>
+      </div>
+
+      <!-- Error -->
+      <div class="error-section" id="errorSection">
+        <div class="error-box">
+          <pre id="errorText"></pre>
+        </div>
+      </div>
+
+      <!-- Result -->
+      <div class="result-section" id="resultSection">
+        <div class="result-badge">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>
           </svg>
-          Ошибка
-        </h2>
-        <pre>{{ error }}</pre>
-      </section>
-    {% endif %}
+          Найдено вакансий: <strong id="rowCount">0</strong>
+        </div>
+        <div class="downloads" id="downloadLinks"></div>
+      </div>
+    </div>
 
-    {% if result %}
-      <section class="panel result-panel">
-        <div class="result-header">
-          <div class="result-info">
-            <h2>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>
-              </svg>
-              Результат
-            </h2>
-            <p class="run-meta">Найдено вакансий: <strong>{{ result.row_count }}</strong></p>
-          </div>
-        </div>
-        <div class="downloads">
-          <a href="/download/{{ result.run_id }}/xlsx" class="dl-btn dl-xlsx">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-              <polyline points="14 2 14 8 20 8"/>
-              <line x1="12" y1="18" x2="12" y2="12"/>
-              <polyline points="9 15 12 18 15 15"/>
-            </svg>
-            <span>
-              <strong>Скачать Excel</strong>
-              <small>Все вакансии в .xlsx</small>
-            </span>
-          </a>
-          <a href="/download/{{ result.run_id }}/docx" class="dl-btn dl-docx">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-              <polyline points="14 2 14 8 20 8"/>
-              <line x1="16" y1="13" x2="8" y2="13"/>
-              <line x1="16" y1="17" x2="8" y2="17"/>
-            </svg>
-            <span>
-              <strong>Скачать отчёт</strong>
-              <small>Аналитика в .docx</small>
-            </span>
-          </a>
-          <a href="/download/{{ result.run_id }}/csv" class="dl-btn dl-csv">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-              <polyline points="14 2 14 8 20 8"/>
-            </svg>
-            <span>
-              <strong>Скачать CSV</strong>
-              <small>Сырые данные</small>
-            </span>
-          </a>
-        </div>
-      </section>
-
-      {% if rows %}
-      <section class="panel table-panel">
-        <h3>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--red)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/>
-            <line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/>
-          </svg>
-          Предпросмотр <span class="muted">(первые {{ rows|length }} строк)</span>
-        </h3>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                {% for key in rows[0].keys() %}
-                <th>{{ key }}</th>
-                {% endfor %}
-              </tr>
-            </thead>
-            <tbody>
-              {% for row in rows %}
-              <tr>
-                {% for val in row.values() %}
-                <td>{{ val }}</td>
-                {% endfor %}
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-      </section>
-      {% endif %}
-    {% endif %}
+    <!-- Preview table -->
+    <div class="preview-section" id="previewSection">
+      <div class="card">
+        <div class="preview-header">Предпросмотр <span id="previewCount"></span></div>
+        <div class="table-wrap" id="previewTable"></div>
+      </div>
+    </div>
 
     <footer class="footer">
       <p>Parser Vakans &copy; 2026</p>
     </footer>
   </main>
+
+  <script>
+    const form = document.getElementById('parseForm');
+    const btn = document.getElementById('submitBtn');
+    const progressSection = document.getElementById('progressSection');
+    const progressFill = document.getElementById('progressFill');
+    const progressMsg = document.getElementById('progressMsg');
+    const progressPct = document.getElementById('progressPct');
+    const errorSection = document.getElementById('errorSection');
+    const errorText = document.getElementById('errorText');
+    const resultSection = document.getElementById('resultSection');
+    const rowCount = document.getElementById('rowCount');
+    const downloadLinks = document.getElementById('downloadLinks');
+    const previewSection = document.getElementById('previewSection');
+    const previewCount = document.getElementById('previewCount');
+    const previewTable = document.getElementById('previewTable');
+
+    let pollTimer = null;
+
+    function resetUI() {
+      progressSection.classList.remove('active');
+      errorSection.classList.remove('active');
+      resultSection.classList.remove('active');
+      previewSection.classList.remove('active');
+      progressFill.style.width = '0%';
+      progressFill.classList.remove('done');
+      progressMsg.textContent = 'Инициализация...';
+      progressPct.textContent = '0%';
+      downloadLinks.innerHTML = '';
+      previewTable.innerHTML = '';
+    }
+
+    function setLoading(on) {
+      btn.disabled = on;
+      btn.classList.toggle('loading', on);
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      resetUI();
+      setLoading(true);
+      progressSection.classList.add('active');
+
+      const fd = new FormData(form);
+      const body = new URLSearchParams();
+      for (const [k, v] of fd) body.append(k, v);
+      // hidden defaults
+      body.append('area', '1');
+      body.append('pause', '0.9');
+      body.append('search_in', 'name');
+      body.append('workers', '8');
+      body.append('timeout', '8.0');
+      body.append('role', '');
+      body.append('no_filter', 'true');
+
+      try {
+        const res = await fetch('/run', { method: 'POST', body });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || 'Ошибка запуска');
+        }
+        // Start polling
+        const runId = data.run_id;
+        startPolling(runId);
+      } catch (err) {
+        setLoading(false);
+        progressSection.classList.remove('active');
+        errorSection.classList.add('active');
+        errorText.textContent = err.message;
+      }
+    });
+
+    function startPolling(runId) {
+      pollTimer = setInterval(async () => {
+        try {
+          const res = await fetch('/progress');
+          if (!res.ok) return;
+          const data = await res.json();
+
+          progressFill.style.width = data.percent + '%';
+          progressPct.textContent = data.percent + '%';
+          progressMsg.textContent = data.message;
+
+          if (data.done) {
+            clearInterval(pollTimer);
+            progressFill.classList.add('done');
+
+            if (data.error) {
+              setLoading(false);
+              errorSection.classList.add('active');
+              errorText.textContent = data.error;
+              return;
+            }
+
+            // Show results
+            rowCount.textContent = data.row_count || 0;
+            resultSection.classList.add('active');
+
+            const rid = data.run_id || runId;
+            downloadLinks.innerHTML = `
+              <a href="/download/${rid}/xlsx" class="dl-btn dl-xlsx">
+                <div class="dl-icon">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                    <polyline points="14 2 14 8 20 8"/>
+                    <line x1="12" y1="18" x2="12" y2="12"/>
+                    <polyline points="9 15 12 18 15 15"/>
+                  </svg>
+                </div>
+                <div class="dl-text">
+                  <strong>Excel</strong>
+                  <small>Аналитика .xlsx</small>
+                </div>
+              </a>
+              <a href="/download/${rid}/docx" class="dl-btn dl-docx">
+                <div class="dl-icon">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                    <polyline points="14 2 14 8 20 8"/>
+                    <line x1="16" y1="13" x2="8" y2="13"/>
+                    <line x1="16" y1="17" x2="8" y2="17"/>
+                  </svg>
+                </div>
+                <div class="dl-text">
+                  <strong>Отчёт</strong>
+                  <small>Аналитика .docx</small>
+                </div>
+              </a>
+              <a href="/download/${rid}/csv" class="dl-btn dl-csv">
+                <div class="dl-icon">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                    <polyline points="14 2 14 8 20 8"/>
+                  </svg>
+                </div>
+                <div class="dl-text">
+                  <strong>CSV</strong>
+                  <small>Сырые данные</small>
+                </div>
+              </a>
+            `;
+
+            // Load preview
+            try {
+              const prevRes = await fetch('/api/result/' + rid);
+              if (prevRes.ok) {
+                const prevData = await prevRes.json();
+                if (prevData.preview && prevData.preview.length > 0) {
+                  const rows = prevData.preview;
+                  const keys = Object.keys(rows[0]);
+                  let html = '<table><thead><tr>';
+                  keys.forEach(k => html += '<th>' + k + '</th>');
+                  html += '</tr></thead><tbody>';
+                  rows.forEach(r => {
+                    html += '<tr>';
+                    keys.forEach(k => html += '<td>' + (r[k] ?? '') + '</td>');
+                    html += '</tr>';
+                  });
+                  html += '</tbody></table>';
+                  previewTable.innerHTML = html;
+                  previewCount.textContent = '(первые ' + rows.length + ' строк)';
+                  previewSection.classList.add('active');
+                }
+              }
+            } catch (_) {}
+
+            setLoading(false);
+          }
+        } catch (_) {}
+      }, 1500);
+    }
+  </script>
 </body>
 </html>
