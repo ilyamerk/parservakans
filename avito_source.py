@@ -38,15 +38,19 @@ LOGGER = logging.getLogger(__name__)
 USER_AGENTS = [
     (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     ),
     (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_5_1) AppleWebKit/605.1.15 "
-        "(KHTML, like Gecko) Version/17.5 Safari/605.1.15"
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 "
+        "(KHTML, like Gecko) Version/18.4 Safari/605.1.15"
+    ),
+    (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
     ),
     (
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
+        "Chrome/131.0.0.0 Safari/537.36"
     ),
 ]
 
@@ -494,12 +498,92 @@ class AvitoCollector:
             params["q"] = query
         return f"{base}?{urlencode(params, doseq=True)}"
 
+    # Selector cascades: try each in order, first match wins.
+    _ITEM_SELECTORS = [
+        '[data-marker="item"]',
+        'div[data-item-id]',
+        'div[class*="iva-item-root"]',
+        'div[class*="items-item"]',
+        'div[class*="catalog-item"]',
+        'div[class*="styles-root"]',
+        'div[class*="item-root"]',
+    ]
+    _LINK_SELECTORS = [
+        'a[data-marker="item-title"]',
+        'a[data-marker="item/title"]',
+        'a[itemprop="url"]',
+        'a[href*="/vakansii/"]',
+        'h3[itemprop="name"] a',
+        'a[class*="title-root"]',
+        'a[class*="link-link"]',
+        'a[class*="iva-item-title"]',
+        'a[class*="styles-module-root"]',
+    ]
+    _TITLE_SELECTORS = [
+        'h3[itemprop="name"]',
+        '[itemprop="name"]',
+        'h3[class*="title"]',
+        '[class*="title-root"]',
+    ]
+    _PRICE_SELECTORS = [
+        '[data-marker="item-price"]',
+        '[data-marker="item/price"]',
+        'meta[itemprop="price"]',
+        '[itemprop="price"]',
+        'span[class*="price"]',
+        '[class*="price-root"]',
+        '[class*="styles-module-price"]',
+    ]
+    _LOCATION_SELECTORS = [
+        '[data-marker="item-address"]',
+        '[data-marker="item-location"]',
+        'div[class*="geo"]',
+        '[class*="location"]',
+    ]
+    _DATE_SELECTORS = [
+        '[data-marker="item-date"]',
+        '[data-marker="item/date"]',
+        'div[class*="date"]',
+        'time',
+    ]
+
+    @staticmethod
+    def _select_first(node, selectors: list):
+        """Try each selector in order, return first match or None."""
+        for sel in selectors:
+            result = node.select_one(sel)
+            if result:
+                return result
+        return None
+
+    @staticmethod
+    def _select_all_items(soup, selectors: list):
+        """Try each item selector; return results from the first one that yields items."""
+        for sel in selectors:
+            nodes = soup.select(sel)
+            if nodes:
+                return nodes
+        return []
+
     def _parse_listing(self, html_text: str, page_url: str) -> List[ListingCard]:
         soup = BeautifulSoup(html_text, "lxml")
         cards: List[ListingCard] = []
-        nodes = soup.select('[data-marker="item"]')
+        nodes = self._select_all_items(soup, self._ITEM_SELECTORS)
+        used_item_sel = "unknown"
+        for sel in self._ITEM_SELECTORS:
+            if soup.select_one(sel):
+                used_item_sel = sel
+                break
         for node in nodes:
-            link = node.select_one('a[data-marker="item-title"], a[data-marker="item/title"]')
+            # --- find link ---
+            link = self._select_first(node, self._LINK_SELECTORS)
+            # Fallback: any <a> whose href looks like a vacancy URL
+            if not link or not link.get("href"):
+                for a_tag in node.find_all("a", href=True):
+                    href_val = a_tag.get("href", "")
+                    if re.search(r"/vakansii/|/rabota/|_\d{6,}$|-\d{6,}$", href_val):
+                        link = a_tag
+                        break
             if not link or not link.get("href"):
                 continue
             href = link.get("href")
@@ -507,22 +591,49 @@ class AvitoCollector:
             ext_id = _extract_external_id(url)
             if not ext_id:
                 continue
-            title = link.get_text(strip=True)
-            salary_node = node.select_one('[data-marker="item-price"], [data-marker="item/price"]')
-            salary_text = salary_node.get_text(" ", strip=True) if salary_node else ""
-            location_node = node.select_one('[data-marker="item-location"]')
+
+            # --- title ---
+            title_node = self._select_first(node, self._TITLE_SELECTORS)
+            title = title_node.get_text(strip=True) if title_node else link.get_text(strip=True)
+
+            # --- price / salary ---
+            salary_node = self._select_first(node, self._PRICE_SELECTORS)
+            if salary_node and salary_node.name == "meta":
+                salary_text = salary_node.get("content", "")
+            else:
+                salary_text = salary_node.get_text(" ", strip=True) if salary_node else ""
+
+            # --- location / address ---
+            location_node = self._select_first(node, self._LOCATION_SELECTORS)
             location_text = location_node.get_text(" ", strip=True) if location_node else ""
-            address_node = node.select_one('[data-marker="item-address"]')
-            address_raw = address_node.get_text(" ", strip=True) if address_node else None
-            date_node = node.select_one('[data-marker="item-date"]')
-            posted_at_raw = date_node.get_text(" ", strip=True) if date_node else None
+            address_raw = location_text or None
+
+            # --- date ---
+            date_node = self._select_first(node, self._DATE_SELECTORS)
+            posted_at_raw = None
+            if date_node:
+                posted_at_raw = date_node.get("datetime") or date_node.get_text(" ", strip=True)
+
+            # --- badges ---
             badge_text = " ".join(
-                b.get_text(" ", strip=True) for b in node.select('[data-marker="item-badge"], [data-marker="item-badge/top"]')
+                b.get_text(" ", strip=True)
+                for b in node.select(
+                    '[data-marker="item-badge"], [data-marker="item-badge/top"], '
+                    '[class*="badge"], [class*="promo"]'
+                )
             )
-            is_promoted = bool(re.search(r"реклам|премиум|top", badge_text, re.IGNORECASE))
-            is_featured = bool(re.search(r"топ|выдел", badge_text, re.IGNORECASE))
-            snippet_node = node.select_one('[data-marker="item-snippet"], [data-marker="item-description"]')
+            is_promoted = bool(re.search(r"реклам|премиум|top|продвиж", badge_text, re.IGNORECASE))
+            is_featured = bool(re.search(r"топ|выдел|xl|highlight", badge_text, re.IGNORECASE))
+
+            # --- snippet ---
+            snippet_node = self._select_first(node, [
+                '[data-marker="item-snippet"]',
+                '[data-marker="item-description"]',
+                '[class*="snippet"]',
+                '[class*="description"]',
+            ])
             snippet_text = snippet_node.get_text(" ", strip=True) if snippet_node else None
+
             card = ListingCard(
                 external_id=ext_id,
                 url_listing=page_url,
@@ -537,8 +648,9 @@ class AvitoCollector:
                 snippet_text=snippet_text,
                 raw_html=str(node),
                 diagnostics={
-                    "title_selector": ['a[data-marker="item-title"]'],
-                    "salary_selector": ['[data-marker="item-price"]'],
+                    "item_selector": [used_item_sel],
+                    "title_selector": ['cascade'],
+                    "salary_selector": ['cascade'],
                 },
             )
             cards.append(card)
@@ -854,7 +966,24 @@ class AvitoCollector:
                     debug_path.write_text(response.text, encoding="utf-8")
                     print(f"[avito-debug] status_code={response.status_code}")
                     print(f"[avito-debug] response length={len(response.text)}")
-                    print(f"[avito-debug] first 1000 chars:\n{response.text[:1000]}")
+                    print(f"[avito-debug] first 2000 chars of body:")
+                    _dbg_soup = BeautifulSoup(response.text, "lxml")
+                    _dbg_body = _dbg_soup.find("body")
+                    if _dbg_body:
+                        print(_dbg_body.get_text(" ", strip=True)[:2000])
+                    else:
+                        print(response.text[:2000])
+                    # Show which selectors were tried and what exists
+                    for sel in self._ITEM_SELECTORS:
+                        count = len(_dbg_soup.select(sel))
+                        if count:
+                            print(f"[avito-debug] selector {sel!r} matched {count} nodes")
+                    # Check for common Avito item patterns
+                    for attr in ["data-marker", "data-item-id"]:
+                        nodes_with_attr = _dbg_soup.find_all(attrs={attr: True})
+                        if nodes_with_attr:
+                            vals = set(n.get(attr) for n in nodes_with_attr[:20])
+                            print(f"[avito-debug] found {len(nodes_with_attr)} nodes with {attr}, values: {vals}")
                     print(f"[avito-debug] HTML saved to {debug_path}")
                     LOGGER.warning(
                         "Avito 0 cards on page 1 — debug HTML saved to %s (status=%s, len=%s)",
