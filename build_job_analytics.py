@@ -233,6 +233,59 @@ def compute_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
 
 
+def _format_sheet(xl, ws, sheet_df, fmt_link, fmt_num2, fmt_int):
+    """Apply standard formatting to a worksheet: freeze, links, number formats, auto-width."""
+    try:
+        ws.freeze_panes(1, 0)
+    except Exception:
+        pass
+
+    if "Ссылка" in sheet_df.columns:
+        try:
+            col_idx = list(sheet_df.columns).index("Ссылка")
+            for r, url in enumerate(sheet_df["Ссылка"].astype(str), start=1):
+                u = (url or "").strip()
+                if u:
+                    u = re.sub(r"^https?://m\.avito\.ru", "https://www.avito.ru", u)
+                    u = re.sub(r"^https?://avito\.ru", "https://www.avito.ru", u)
+                    u = re.sub(r"\?.*$", "", u)
+                if u.startswith("http"):
+                    ws.write_url(r, col_idx, u, fmt_link, u)
+                else:
+                    ws.write(r, col_idx, u)
+        except Exception:
+            pass
+
+    num2_cols = [
+        "В час",
+        "Ставка (расчётная) в час, ₽",
+        "Средний совокупный доход при графике 2/2 по 12 часов",
+        "ЗП от (т.р.)",
+        "ЗП до (т.р.)",
+    ]
+    for col in num2_cols:
+        if col in sheet_df.columns:
+            try:
+                cidx = list(sheet_df.columns).index(col)
+                ws.set_column(cidx, cidx, None, fmt_num2)
+            except Exception:
+                pass
+    if "Длительность смены" in sheet_df.columns:
+        try:
+            cidx = list(sheet_df.columns).index("Длительность смены")
+            ws.set_column(cidx, cidx, None, fmt_int)
+        except Exception:
+            pass
+
+    for idx, col in enumerate(sheet_df.columns):
+        try:
+            sample = sheet_df[col].head(200).astype(str).tolist()
+            max_len = max([len(str(col))] + [len(s) for s in sample])
+        except Exception:
+            max_len = len(str(col))
+        ws.set_column(idx, idx, min(max_len + 2, 60))
+
+
 def write_excel(df: pd.DataFrame, path: Path, rates: list[dict] | None = None):
     df = sanitize_excel_strings(df)
     # 1) Нормализуем колонку со ссылками заранее (если есть)
@@ -256,67 +309,28 @@ def write_excel(df: pd.DataFrame, path: Path, rates: list[dict] | None = None):
         df.to_excel(xl, sheet_name=sheet, index=False)
         ws = xl.sheets[sheet]
 
-        # Freeze заголовки
-        try:
-            ws.freeze_panes(1, 0)
-        except Exception:
-            pass
-
         # Форматы
         fmt_link = xl.book.add_format({"underline": 1, "font_color": "blue"})
         fmt_num2 = xl.book.add_format({"num_format": "0.00"})
         fmt_int  = xl.book.add_format({"num_format": "0"})
 
-        # 3) Явно проставим гиперссылки в колонке "Ссылка"
-        if "Ссылка" in df.columns:
-            try:
-                col_idx = list(df.columns).index("Ссылка")
-                # Переписываем ячейки как URL (иначе Excel не кликнет, т.к. strings_to_urls=False)
-                for r, url in enumerate(df["Ссылка"].astype(str), start=1):  # row=1 — первая строка данных
-                    u = (url or "").strip()
-                    if u:
-                        # нормализуем домен Avito и уберём query на всякий случай
-                        u = re.sub(r"^https?://m\.avito\.ru", "https://www.avito.ru", u)
-                        u = re.sub(r"^https?://avito\.ru", "https://www.avito.ru", u)
-                        u = re.sub(r"\?.*$", "", u)
-                    if u.startswith("http"):
-                        ws.write_url(r, col_idx, u, fmt_link, u)
-                    else:
-                        ws.write(r, col_idx, u)
-            except Exception:
-                pass
+        _format_sheet(xl, ws, df, fmt_link, fmt_num2, fmt_int)
 
-        # 4) Применим числовые форматы к ключевым колонкам (если есть)
-        num2_cols = [
-            "В час",
-            "Ставка (расчётная) в час, ₽",
-            "Средний совокупный доход при графике 2/2 по 12 часов",
-            "ЗП от (т.р.)",
-            "ЗП до (т.р.)",
+        # --- Source-specific sheets: hh.ru and Avito ---
+        source_col = "Источник" if "Источник" in df.columns else None
+        source_sheets = [
+            ("hh.ru", "hh.ru"),
+            ("Avito", "avito.ru"),
         ]
-        for col in num2_cols:
-            if col in df.columns:
-                try:
-                    cidx = list(df.columns).index(col)
-                    # применим формат на разумный диапазон (первые 50k строк)
-                    ws.set_column(cidx, cidx, None, fmt_num2)
-                except Exception:
-                    pass
-        if "Длительность смены" in df.columns:
-            try:
-                cidx = list(df.columns).index("Длительность смены")
-                ws.set_column(cidx, cidx, None, fmt_int)
-            except Exception:
-                pass
-
-        # 5) Автоширина колонок (по первым ~200 строкам)
-        for idx, col in enumerate(df.columns):
-            try:
-                sample = df[col].head(200).astype(str).tolist()
-                max_len = max([len(str(col))] + [len(s) for s in sample])
-            except Exception:
-                max_len = len(str(col))
-            ws.set_column(idx, idx, min(max_len + 2, 60))
+        for sheet_label, source_value in source_sheets:
+            src_sheet_name = unique_sheet_name(xl, sheet_label)
+            if source_col:
+                src_df = df[df[source_col].astype(str).str.lower() == source_value.lower()].reset_index(drop=True)
+            else:
+                src_df = df.iloc[0:0]  # empty with same columns
+            src_df.to_excel(xl, sheet_name=src_sheet_name, index=False)
+            src_ws = xl.sheets[src_sheet_name]
+            _format_sheet(xl, src_ws, src_df, fmt_link, fmt_num2, fmt_int)
 
         if rates:
             sheet_name = unique_sheet_name(xl, RATES_SHEET_BASE)

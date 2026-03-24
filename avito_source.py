@@ -76,6 +76,30 @@ _REGION_SLUGS = {
     "волгоград": "volgograd",
 }
 
+_REGION_LOCATION_IDS = {
+    "москва": 637640,
+    "moscow": 637640,
+    "санкт-петербург": 653240,
+    "санкт петербург": 653240,
+    "спб": 653240,
+    "екатеринбург": 653060,
+    "ekaterinburg": 653060,
+    "новосибирск": 653100,
+    "казань": 653070,
+    "нижний новгород": 653090,
+    "самара": 653120,
+    "ростов-на-дону": 653110,
+    "ростов на дону": 653110,
+    "уфа": 653150,
+    "красноярск": 653080,
+    "пермь": 653105,
+    "воронеж": 653050,
+    "волгоград": 653040,
+}
+
+# Avito vacancy category ID for the internal API
+_AVITO_VACANCY_CATEGORY_ID = 110
+
 
 def _slugify_region(raw: str) -> str:
     value = (raw or "").strip().lower()
@@ -438,10 +462,8 @@ class AvitoCollector:
         if self._session is not None:
             self._session.headers.update({"User-Agent": USER_AGENTS[self._ua_index]})
 
-    def _http_fetch(self, url: str) -> requests.Response:
-        session = self._session_with_retries()
-        # Set realistic browser headers to avoid bot detection
-        session.headers.update({
+    def _default_headers(self) -> dict:
+        return {
             "Accept": (
                 "text/html,application/xhtml+xml,application/xml;q=0.9,"
                 "image/avif,image/webp,image/apng,*/*;q=0.8"
@@ -456,7 +478,12 @@ class AvitoCollector:
             "Upgrade-Insecure-Requests": "1",
             "Cache-Control": "max-age=0",
             "Connection": "keep-alive",
-        })
+        }
+
+    def _http_fetch(self, url: str) -> requests.Response:
+        session = self._session_with_retries()
+        # Set realistic browser headers to avoid bot detection
+        session.headers.update(self._default_headers())
         # Bypass environment proxy for Avito — egress proxies often block it
         no_proxy = {"http": None, "https": None}
         parsed = urlparse(url)
@@ -484,6 +511,144 @@ class AvitoCollector:
                 continue
             return response
         return response
+
+    # ------------------------------------------------------------------
+    # Avito internal API helpers
+
+    def _build_api_url(self, region: str, query: str, page: int, limit: int = 25) -> Optional[str]:
+        """Build Avito internal API URL for vacancy search."""
+        region_key = (region or "").strip().lower()
+        location_id = _REGION_LOCATION_IDS.get(region_key)
+        if not location_id:
+            return None
+        params = {
+            "locationId": location_id,
+            "categoryId": _AVITO_VACANCY_CATEGORY_ID,
+            "page": page,
+            "limit": limit,
+        }
+        if query:
+            params["query"] = query
+        return f"https://www.avito.ru/api/11/items?{urlencode(params, doseq=True)}"
+
+    def _api_fetch(self, url: str) -> Optional[requests.Response]:
+        """Fetch from the Avito API with appropriate headers."""
+        session = self._session_with_retries()
+        session.headers.update(self._default_headers())
+        session.headers.update({
+            "Accept": "application/json, text/plain, */*",
+            "x-requested-with": "XMLHttpRequest",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+        })
+        no_proxy = {"http": None, "https": None}
+        parsed = urlparse(url)
+        self._limiter.wait(parsed.netloc)
+        delay = self.config.base_delay
+        response = None
+        for attempt in range(self.config.max_retries):
+            try:
+                response = session.get(url, timeout=self.config.request_timeout, proxies=no_proxy)
+            except requests.RequestException as exc:  # pragma: no cover
+                LOGGER.warning("Avito API fetch failed: %s", exc)
+                time.sleep(delay)
+                delay *= 2
+                continue
+
+            if response.status_code in {429, 403}:
+                self.stats["blocked"] += 1
+                self._rotate_user_agent()
+                time.sleep(delay + random.uniform(0.5, 1.0))
+                delay *= 2
+                continue
+            if response.status_code >= 500:
+                time.sleep(delay)
+                delay *= 2
+                continue
+            return response
+        return response
+
+    def _parse_api_items(self, data: dict, page_url: str) -> List[ListingCard]:
+        """Convert Avito API JSON response into ListingCard objects."""
+        items = data.get("items") or data.get("result", {}).get("items") or []
+        cards: List[ListingCard] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            ext_id = item.get("id") or item.get("itemId")
+            if not ext_id:
+                continue
+            try:
+                ext_id = int(ext_id)
+            except (ValueError, TypeError):
+                continue
+
+            title = item.get("title") or ""
+            url_path = item.get("urlPath") or item.get("uri") or ""
+            if url_path and not url_path.startswith("http"):
+                detail_url = urljoin("https://www.avito.ru", url_path)
+            elif url_path:
+                detail_url = url_path
+            else:
+                detail_url = f"https://www.avito.ru/vakansii/{ext_id}"
+
+            # Price / salary
+            price_info = item.get("priceDetailed") or item.get("price") or {}
+            if isinstance(price_info, dict):
+                salary_text = price_info.get("string") or price_info.get("value") or ""
+                if not salary_text:
+                    salary_text = str(price_info.get("value", ""))
+            else:
+                salary_text = str(price_info)
+
+            # Location
+            location = item.get("location") or item.get("geo") or {}
+            if isinstance(location, dict):
+                location_text = location.get("name") or location.get("formattedAddress") or ""
+                address_raw = location.get("address") or location_text or None
+            else:
+                location_text = str(location) if location else ""
+                address_raw = None
+
+            # Date
+            sort_time = item.get("sortTimeStamp") or item.get("time") or item.get("publishedAt")
+            posted_at_raw = str(sort_time) if sort_time else None
+
+            # Badges / promotion
+            badge_text = ""
+            for badge in (item.get("badges") or []):
+                if isinstance(badge, dict):
+                    badge_text += " " + (badge.get("title") or badge.get("text") or "")
+            is_promoted = bool(
+                item.get("isPromoted")
+                or re.search(r"реклам|премиум|top|продвиж", badge_text, re.IGNORECASE)
+            )
+            is_featured = bool(
+                item.get("isFeatured")
+                or re.search(r"топ|выдел|xl|highlight", badge_text, re.IGNORECASE)
+            )
+
+            # Snippet / description
+            snippet_text = item.get("description") or item.get("snippet") or None
+
+            card = ListingCard(
+                external_id=ext_id,
+                url_listing=page_url,
+                url_detail=detail_url,
+                title=title,
+                salary_text=str(salary_text),
+                location_text=location_text,
+                address_raw=address_raw,
+                posted_at_raw=posted_at_raw,
+                is_promoted=is_promoted,
+                is_featured=is_featured,
+                snippet_text=snippet_text,
+                raw_html="",
+                diagnostics={"item_selector": ["api"], "source": ["api"]},
+            )
+            cards.append(card)
+        self.stats["listing_cards"] += len(cards)
+        return cards
 
     # ------------------------------------------------------------------
     # Parsing
@@ -937,6 +1102,28 @@ class AvitoCollector:
             json_path.write_text(json.dumps(sample.get("record"), default=str, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # ------------------------------------------------------------------
+    def _try_api_listing(self, region: str, query: str, page: int) -> Optional[List[ListingCard]]:
+        """Attempt to fetch listings via Avito internal API. Returns None if unavailable."""
+        api_url = self._build_api_url(region, query, page)
+        if not api_url:
+            return None
+        LOGGER.info("Avito API URL: %s", api_url)
+        print(f"[avito-api] GET {api_url}")
+        response = self._api_fetch(api_url)
+        if not response or response.status_code != 200:
+            LOGGER.warning("Avito API failed: status=%s", getattr(response, "status_code", None))
+            return None
+        try:
+            data = response.json()
+        except (ValueError, TypeError):
+            LOGGER.warning("Avito API returned non-JSON response")
+            return None
+        cards = self._parse_api_items(data, api_url)
+        if cards:
+            LOGGER.info("Avito API returned %d cards", len(cards))
+            return cards
+        return None
+
     def collect(self) -> List[Dict[str, object]]:
         combos = []
         categories = self.config.categories or [None]
@@ -949,46 +1136,57 @@ class AvitoCollector:
 
         for region, category, query in combos:
             for page in range(1, self.config.max_pages_per_feed + 1):
+                # --- Try API first (Avito renders cards via JS, HTML is often empty) ---
+                cards = None
+                if self._fetcher == self._http_fetch:
+                    cards = self._try_api_listing(region, query, page)
+
                 listing_url = self._build_listing_url(region, category, query, page)
-                LOGGER.info("Avito listing URL: %s", listing_url)
-                print(f"[avito] GET {listing_url}")
-                response = self._fetcher(listing_url)
-                if not response or response.status_code != 200:
-                    LOGGER.warning("Avito listing fetch failed: %s status=%s", listing_url, getattr(response, "status_code", None))
-                    self.stats["detail_fail"] += 1
-                    break
-                cards = self._parse_listing(response.text, listing_url)
+
+                # --- Fallback to HTML scraping ---
+                if cards is None:
+                    LOGGER.info("Avito listing URL: %s", listing_url)
+                    print(f"[avito] GET {listing_url}")
+                    response = self._fetcher(listing_url)
+                    if not response or response.status_code != 200:
+                        LOGGER.warning("Avito listing fetch failed: %s status=%s", listing_url, getattr(response, "status_code", None))
+                        self.stats["detail_fail"] += 1
+                        break
+                    cards = self._parse_listing(response.text, listing_url)
+
                 if not cards and page == 1:
                     # --- debug dump: 0 cards on first page ----------------
-                    debug_dir = Path("Exports/_debug")
-                    debug_dir.mkdir(parents=True, exist_ok=True)
-                    debug_path = debug_dir / "avito_listing_debug.html"
-                    debug_path.write_text(response.text, encoding="utf-8")
-                    print(f"[avito-debug] status_code={response.status_code}")
-                    print(f"[avito-debug] response length={len(response.text)}")
-                    print(f"[avito-debug] first 2000 chars of body:")
-                    _dbg_soup = BeautifulSoup(response.text, "lxml")
-                    _dbg_body = _dbg_soup.find("body")
-                    if _dbg_body:
-                        print(_dbg_body.get_text(" ", strip=True)[:2000])
+                    # `response` is only set when HTML fallback was used
+                    if 'response' in dir() and response is not None and hasattr(response, 'text'):
+                        debug_dir = Path("Exports/_debug")
+                        debug_dir.mkdir(parents=True, exist_ok=True)
+                        debug_path = debug_dir / "avito_listing_debug.html"
+                        debug_path.write_text(response.text, encoding="utf-8")
+                        print(f"[avito-debug] status_code={response.status_code}")
+                        print(f"[avito-debug] response length={len(response.text)}")
+                        print(f"[avito-debug] first 2000 chars of body:")
+                        _dbg_soup = BeautifulSoup(response.text, "lxml")
+                        _dbg_body = _dbg_soup.find("body")
+                        if _dbg_body:
+                            print(_dbg_body.get_text(" ", strip=True)[:2000])
+                        else:
+                            print(response.text[:2000])
+                        for sel in self._ITEM_SELECTORS:
+                            count = len(_dbg_soup.select(sel))
+                            if count:
+                                print(f"[avito-debug] selector {sel!r} matched {count} nodes")
+                        for attr in ["data-marker", "data-item-id"]:
+                            nodes_with_attr = _dbg_soup.find_all(attrs={attr: True})
+                            if nodes_with_attr:
+                                vals = set(n.get(attr) for n in nodes_with_attr[:20])
+                                print(f"[avito-debug] found {len(nodes_with_attr)} nodes with {attr}, values: {vals}")
+                        print(f"[avito-debug] HTML saved to {debug_path}")
+                        LOGGER.warning(
+                            "Avito 0 cards on page 1 — debug HTML saved to %s (status=%s, len=%s)",
+                            debug_path, response.status_code, len(response.text),
+                        )
                     else:
-                        print(response.text[:2000])
-                    # Show which selectors were tried and what exists
-                    for sel in self._ITEM_SELECTORS:
-                        count = len(_dbg_soup.select(sel))
-                        if count:
-                            print(f"[avito-debug] selector {sel!r} matched {count} nodes")
-                    # Check for common Avito item patterns
-                    for attr in ["data-marker", "data-item-id"]:
-                        nodes_with_attr = _dbg_soup.find_all(attrs={attr: True})
-                        if nodes_with_attr:
-                            vals = set(n.get(attr) for n in nodes_with_attr[:20])
-                            print(f"[avito-debug] found {len(nodes_with_attr)} nodes with {attr}, values: {vals}")
-                    print(f"[avito-debug] HTML saved to {debug_path}")
-                    LOGGER.warning(
-                        "Avito 0 cards on page 1 — debug HTML saved to %s (status=%s, len=%s)",
-                        debug_path, response.status_code, len(response.text),
-                    )
+                        print("[avito-debug] 0 cards on page 1 (API and HTML both returned nothing)")
                     # ------------------------------------------------------
                 if not cards:
                     break
