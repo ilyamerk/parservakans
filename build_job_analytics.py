@@ -86,17 +86,23 @@ EXPECTED_COLS = [
     "Должность","Работодатель","Дата публикации",
     "ЗП от (т.р.)","ЗП до (т.р.)",
     "Средний совокупный доход при графике 2/2 по 12 часов","В час","Длительность смены",
-    "Требуемый опыт","Труд-во","График","Частота выплат","Льготы","Обязаности","Ссылка","Примечание"
+    "Требуемый опыт","Труд-во","График","Частота выплат","Льготы","Обязаности","Ссылка","Примечание","Источник"
 ]
 
 SCHEDULE_SHIFTS_PER_MONTH = {
     "5/2": 22.0,
     "2/2": 15.0,
     "3/3": 15.0,
-    "4/3": 17.5,
+    "4/3": 17.0,
+    "4/4": 15.0,
     "6/1": 26.0,
-    "1/3": 7.5,
+    "1/3": 8.0,
     "7/0": 30.0,
+}
+
+SCHEDULE_DEFAULT_HOURS = {
+    "5/2": 8.0,
+    "2/2": 12.0,
 }
 
 # ---- Helpers ----
@@ -134,6 +140,7 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
         elif "обязан" in x: mapping[c] = "Обязаности"
         elif "ссылка" in x or "url" in x: mapping[c] = "Ссылка"
         elif "примеч" in x or "коммент" in x: mapping[c] = "Примечание"
+        elif "источник" in x or x == "source": mapping[c] = "Источник"
 
     df = df.rename(columns=mapping)
 
@@ -175,12 +182,45 @@ def coerce_numbers(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def compute_metrics(df: pd.DataFrame) -> pd.DataFrame:
-    # Рассчитываем совокупный доход за смену только при наличии точной ставки в час
-    # и явно найденной длительности смены. Никаких дефолтных смен и пересчётов
-    # месячной зарплаты в часовую ставку не делаем.
+    # 1) Если ставка в час отсутствует, считаем по формуле:
+    #    (ЗП от / длительность смены / кол-во смен) × 1000
+    #    ЗП от хранится в тысячах рублей.
+    #    Если длительность смены не указана — берём дефолт по графику (только 5/2→8ч, 2/2→12ч).
+    #    Если график не распознан — не рассчитываем.
+    schedule_series = df.get("График", pd.Series([""] * len(df), index=df.index)).fillna("").astype(str).str.strip()
+    shifts_per_month = schedule_series.map(lambda s: SCHEDULE_SHIFTS_PER_MONTH.get(s, np.nan))
+
     hour_series = df.get("В час", pd.Series(np.nan, index=df.index))
+    salary_from_series = df.get("ЗП от (т.р.)", pd.Series(np.nan, index=df.index))
     shift_length_series = df.get("Длительность смены", pd.Series(np.nan, index=df.index))
 
+    # Fill missing shift length from schedule defaults (only 5/2 and 2/2)
+    default_hours = schedule_series.map(lambda s: SCHEDULE_DEFAULT_HOURS.get(s, np.nan))
+    effective_shift = shift_length_series.where(shift_length_series.notna() & (shift_length_series > 0), default_hours)
+
+    mask_no_hour = (
+        hour_series.isna()
+        & salary_from_series.notna()
+        & effective_shift.notna()
+        & (effective_shift > 0)
+        & shifts_per_month.notna()
+        & (shifts_per_month > 0)
+    )
+    df.loc[mask_no_hour, "В час"] = (
+        salary_from_series[mask_no_hour]
+        / effective_shift[mask_no_hour]
+        / shifts_per_month[mask_no_hour]
+        * 1000.0
+    )
+
+    # Update shift length column with defaults used for calculation
+    df.loc[mask_no_hour & shift_length_series.isna(), "Длительность смены"] = (
+        default_hours[mask_no_hour & shift_length_series.isna()]
+    )
+
+    # 2) Рассчитываем "за 12 часов" только если "В час" определено.
+    hour_series = df.get("В час", pd.Series(np.nan, index=df.index))
+    shift_length_series = df.get("Длительность смены", pd.Series(np.nan, index=df.index))
     can_compute_shift_income = (
         hour_series.notna()
         & shift_length_series.notna()
@@ -197,12 +237,66 @@ def compute_metrics(df: pd.DataFrame) -> pd.DataFrame:
         mask_len = df["Длительность смены"].isna()
         df.loc[mask_len, "Длительность смены"] = "-"
 
+    # 4) Округление до 1 десятичного знака
     for col in ["В час", "Средний совокупный доход при графике 2/2 по 12 часов", "ЗП от (т.р.)", "ЗП до (т.р.)"]:
         if col in df.columns:
-            df[col] = df[col].round(2)
+            df[col] = df[col].round(1)
 
     return df
 
+
+
+def _format_sheet(xl, ws, sheet_df, fmt_link, fmt_num2, fmt_int):
+    """Apply standard formatting to a worksheet: freeze, links, number formats, auto-width."""
+    try:
+        ws.freeze_panes(1, 0)
+    except Exception:
+        pass
+
+    if "Ссылка" in sheet_df.columns:
+        try:
+            col_idx = list(sheet_df.columns).index("Ссылка")
+            for r, url in enumerate(sheet_df["Ссылка"].astype(str), start=1):
+                u = (url or "").strip()
+                if u:
+                    u = re.sub(r"^https?://m\.avito\.ru", "https://www.avito.ru", u)
+                    u = re.sub(r"^https?://avito\.ru", "https://www.avito.ru", u)
+                    u = re.sub(r"\?.*$", "", u)
+                if u.startswith("http"):
+                    ws.write_url(r, col_idx, u, fmt_link, u)
+                else:
+                    ws.write(r, col_idx, u)
+        except Exception:
+            pass
+
+    num2_cols = [
+        "В час",
+        "Ставка (расчётная) в час, ₽",
+        "Средний совокупный доход при графике 2/2 по 12 часов",
+        "ЗП от (т.р.)",
+        "ЗП до (т.р.)",
+    ]
+    for col in num2_cols:
+        if col in sheet_df.columns:
+            try:
+                cidx = list(sheet_df.columns).index(col)
+                ws.set_column(cidx, cidx, None, fmt_num2)
+            except Exception:
+                pass
+    if "Длительность смены" in sheet_df.columns:
+        try:
+            cidx = list(sheet_df.columns).index("Длительность смены")
+            ws.set_column(cidx, cidx, None, fmt_int)
+        except Exception:
+            pass
+
+    for idx, col in enumerate(sheet_df.columns):
+        try:
+            sample = sheet_df[col].head(200).astype(str).tolist()
+            max_len = max([len(str(col))] + [len(s) for s in sample])
+        except Exception:
+            max_len = len(str(col))
+        ws.set_column(idx, idx, min(max_len + 2, 60))
 
 
 def write_excel(df: pd.DataFrame, path: Path, rates: list[dict] | None = None):
@@ -228,64 +322,28 @@ def write_excel(df: pd.DataFrame, path: Path, rates: list[dict] | None = None):
         df.to_excel(xl, sheet_name=sheet, index=False)
         ws = xl.sheets[sheet]
 
-        # Freeze заголовки
-        try:
-            ws.freeze_panes(1, 0)
-        except Exception:
-            pass
-
         # Форматы
         fmt_link = xl.book.add_format({"underline": 1, "font_color": "blue"})
         fmt_num2 = xl.book.add_format({"num_format": "0.00"})
         fmt_int  = xl.book.add_format({"num_format": "0"})
 
-        # 3) Явно проставим гиперссылки в колонке "Ссылка"
-        if "Ссылка" in df.columns:
-            try:
-                col_idx = list(df.columns).index("Ссылка")
-                # Переписываем ячейки как URL (иначе Excel не кликнет, т.к. strings_to_urls=False)
-                for r, url in enumerate(df["Ссылка"].astype(str), start=1):  # row=1 — первая строка данных
-                    u = (url or "").strip()
-                    if u:
-                        u = re.sub(r"\?.*$", "", u)
-                    if u.startswith("http"):
-                        ws.write_url(r, col_idx, u, fmt_link, u)
-                    else:
-                        ws.write(r, col_idx, u)
-            except Exception:
-                pass
+        _format_sheet(xl, ws, df, fmt_link, fmt_num2, fmt_int)
 
-        # 4) Применим числовые форматы к ключевым колонкам (если есть)
-        num2_cols = [
-            "В час",
-            "Ставка (расчётная) в час, ₽",
-            "Средний совокупный доход при графике 2/2 по 12 часов",
-            "ЗП от (т.р.)",
-            "ЗП до (т.р.)",
+        # --- Source-specific sheets: hh.ru and Avito ---
+        source_col = "Источник" if "Источник" in df.columns else None
+        source_sheets = [
+            ("hh.ru", "hh.ru"),
+            ("Avito", "avito.ru"),
         ]
-        for col in num2_cols:
-            if col in df.columns:
-                try:
-                    cidx = list(df.columns).index(col)
-                    # применим формат на разумный диапазон (первые 50k строк)
-                    ws.set_column(cidx, cidx, None, fmt_num2)
-                except Exception:
-                    pass
-        if "Длительность смены" in df.columns:
-            try:
-                cidx = list(df.columns).index("Длительность смены")
-                ws.set_column(cidx, cidx, None, fmt_int)
-            except Exception:
-                pass
-
-        # 5) Автоширина колонок (по первым ~200 строкам)
-        for idx, col in enumerate(df.columns):
-            try:
-                sample = df[col].head(200).astype(str).tolist()
-                max_len = max([len(str(col))] + [len(s) for s in sample])
-            except Exception:
-                max_len = len(str(col))
-            ws.set_column(idx, idx, min(max_len + 2, 60))
+        for sheet_label, source_value in source_sheets:
+            src_sheet_name = unique_sheet_name(xl, sheet_label)
+            if source_col:
+                src_df = df[df[source_col].astype(str).str.lower() == source_value.lower()].reset_index(drop=True)
+            else:
+                src_df = df.iloc[0:0]  # empty with same columns
+            src_df.to_excel(xl, sheet_name=src_sheet_name, index=False)
+            src_ws = xl.sheets[src_sheet_name]
+            _format_sheet(xl, src_ws, src_df, fmt_link, fmt_num2, fmt_int)
 
         if rates:
             sheet_name = unique_sheet_name(xl, RATES_SHEET_BASE)

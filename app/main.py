@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -10,7 +11,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from core.pipeline_service import PipelineError, run_parser_pipeline
+from core.pipeline_service import PipelineError, run_parser_pipeline, PROGRESS
 from core.schemas import ParserRunRequest
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -35,12 +36,11 @@ def health() -> dict[str, str]:
 
 @app.get("/")
 def index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request, "result": None, "rows": [], "error": None})
+    return templates.TemplateResponse("index.html", {"request": request})
 
 
 @app.post("/run")
 def run_from_form(
-    request: Request,
     query: str = Form("Бариста"),
     area: int = Form(1),
     city: str = Form("Москва"),
@@ -66,21 +66,49 @@ def run_from_form(
         role=role,
         no_filter=no_filter,
     )
-    try:
-        result = run_parser_pipeline(req)
-    except PipelineError as exc:
-        return templates.TemplateResponse(
-            "index.html",
-            {"request": request, "result": None, "rows": [], "error": str(exc)},
-            status_code=400,
-        )
 
-    RUNS[result.run_id] = {
-        "result": asdict(result),
-        "request": asdict(req),
-    }
-    rows = _preview_from_csv(result.csv_path)
-    return templates.TemplateResponse("index.html", {"request": request, "result": result, "rows": rows, "error": None})
+    # Reset progress
+    PROGRESS["percent"] = 0
+    PROGRESS["message"] = "Инициализация..."
+    PROGRESS["done"] = False
+    PROGRESS["error"] = None
+    PROGRESS["run_id"] = None
+    PROGRESS["row_count"] = 0
+
+    def run_in_bg():
+        try:
+            result = run_parser_pipeline(req)
+            RUNS[result.run_id] = {
+                "result": asdict(result),
+                "request": asdict(req),
+            }
+            PROGRESS["run_id"] = result.run_id
+            PROGRESS["row_count"] = result.row_count
+            PROGRESS["percent"] = 100
+            PROGRESS["message"] = f"Готово! Найдено вакансий: {result.row_count}"
+            PROGRESS["done"] = True
+        except PipelineError as exc:
+            PROGRESS["percent"] = 100
+            PROGRESS["message"] = "Ошибка"
+            PROGRESS["done"] = True
+            PROGRESS["error"] = str(exc)
+
+    thread = threading.Thread(target=run_in_bg, daemon=True)
+    thread.start()
+
+    return JSONResponse({"status": "started", "run_id": "pending"})
+
+
+@app.get("/progress")
+def get_progress():
+    return JSONResponse({
+        "percent": PROGRESS["percent"],
+        "message": PROGRESS["message"],
+        "done": PROGRESS["done"],
+        "error": PROGRESS["error"],
+        "run_id": PROGRESS.get("run_id"),
+        "row_count": PROGRESS.get("row_count", 0),
+    })
 
 
 @app.post("/api/run")

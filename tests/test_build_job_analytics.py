@@ -78,6 +78,47 @@ def test_write_excel_strips_illegal_xml_control_chars(tmp_path):
     assert restored.loc[0, "Должность"] == "Поварна смену"
 
 
+def test_compute_metrics_uses_monthly_formula_with_schedule_mapping():
+    df = pd.DataFrame(
+        [
+            {
+                "ЗП от (т.р.)": 90.0,
+                "В час": np.nan,
+                "Длительность смены": 10.0,
+                "График": "5/2",
+                "Средний совокупный доход при графике 2/2 по 12 часов": np.nan,
+            }
+        ]
+    )
+
+    result = compute_metrics(df)
+
+    # (90 / 10 / 22) * 1000 = 409.1 (rounded to 1 decimal)
+    assert result.loc[0, "В час"] == 409.1
+    # income = hourly * shift_length = 409.1 * 10 = 4091.0
+    assert result.loc[0, "Средний совокупный доход при графике 2/2 по 12 часов"] == 4091.0
+
+
+def test_compute_metrics_skips_unknown_schedule():
+    """Unknown schedule should not be calculated — hourly rate stays empty."""
+    df = pd.DataFrame(
+        [
+            {
+                "ЗП от (т.р.)": 88.0,
+                "В час": np.nan,
+                "Длительность смены": 8.0,
+                "График": "гибкий",
+                "Средний совокупный доход при графике 2/2 по 12 часов": np.nan,
+            }
+        ]
+    )
+
+    result = compute_metrics(df)
+
+    assert pd.isna(result.loc[0, "В час"])
+    assert pd.isna(result.loc[0, "Средний совокупный доход при графике 2/2 по 12 часов"])
+
+
 def test_normalize_columns_keeps_single_link_column():
     from build_job_analytics import normalize_columns
 
