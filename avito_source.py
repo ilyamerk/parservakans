@@ -1147,7 +1147,9 @@ class AvitoCollector:
                 else:
                     print("[Avito] Playwright returned 0 records, falling back to requests")
             except Exception as e:
+                import traceback
                 print(f"[Avito] Playwright failed ({e}), falling back to requests")
+                traceback.print_exc()
 
         print("[Avito] метод: requests")
 
