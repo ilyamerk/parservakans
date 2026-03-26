@@ -3265,10 +3265,14 @@ def main():
     except Exception as e:
         print(f"Failed to write rate JSON: {e}")
 
-    # XLSX для просмотра (только пользовательские столбцы)
-    df_x = df[[c for c in EXPORT_COLS if c in df.columns]]
-    df_x.to_excel(xlsx_path, index=False)
-    print(f"Wrote {len(df_x)} rows -> {xlsx_path}")
+    # XLSX для просмотра (с листами по источникам: hh.ru, avito.ru)
+    from build_job_analytics import normalize_columns, coerce_numbers, compute_metrics, write_excel as _write_excel
+    df_x = df[[c for c in EXPORT_COLS if c in df.columns]].copy()
+    df_analytics = normalize_columns(df_x)
+    df_analytics = coerce_numbers(df_analytics)
+    df_analytics = compute_metrics(df_analytics)
+    _write_excel(df_analytics, xlsx_path, rates=rate_rows or None)
+    print(f"Wrote {len(df_analytics)} rows -> {xlsx_path}")
 
 if __name__ == "__main__":
     main()

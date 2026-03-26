@@ -161,14 +161,27 @@ class AvitoPlaywrightCollector:
             launch_kwargs = {"headless": True}
             try:
                 browser = pw.chromium.launch(**launch_kwargs)
-            except Exception:
+            except Exception as launch_err:
+                print(f"[Avito/pw] default launch failed: {launch_err}")
                 # Search for installed Chromium in common paths
                 chromium_path = self._find_chromium()
                 if chromium_path:
+                    print(f"[Avito/pw] found Chromium at {chromium_path}")
                     launch_kwargs["executable_path"] = chromium_path
                     browser = pw.chromium.launch(**launch_kwargs)
                 else:
-                    raise
+                    # Auto-install Chromium and retry
+                    import subprocess as _sp
+                    print("[Avito/pw] Chromium not found, installing via playwright install chromium ...")
+                    _sp.run(
+                        ["python", "-m", "playwright", "install", "chromium"],
+                        check=True,
+                    )
+                    # After install, try find again then default launch
+                    chromium_path = self._find_chromium()
+                    if chromium_path:
+                        launch_kwargs["executable_path"] = chromium_path
+                    browser = pw.chromium.launch(**launch_kwargs)
             context = browser.new_context(
                 user_agent=(
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -254,7 +267,8 @@ class AvitoPlaywrightCollector:
                 record = self._parse_card(item)
                 if record and record.get("title"):
                     cards.append(record)
-            except Exception:
+            except Exception as exc:
+                print(f"[Avito/pw] _parse_card error: {exc}")
                 continue
 
         return cards
