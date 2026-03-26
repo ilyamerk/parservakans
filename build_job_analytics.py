@@ -77,15 +77,7 @@ def _clean_url(u: str) -> str:
         while host.startswith("www."):
             host = host[4:]
 
-        # m.avito.ru -> avito.ru
-        if host.startswith("m.avito.ru"):
-            host = "avito.ru"
-
-        # итог: ровно один www для avito, иначе оставляем как есть
-        netloc = "www.avito.ru" if host.endswith("avito.ru") else (p.netloc or "")
-
-        # возвращаем без query/fragment
-        return _up.urlunsplit((scheme, netloc, p.path, "", ""))
+        return _up.urlunsplit((scheme, p.netloc or "", p.path, "", ""))
     except Exception:
         return u
 
@@ -152,6 +144,22 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     df = df.rename(columns=mapping)
 
+    # после переименования могут появиться дубли (например, несколько колонок,
+    # которые все нормализовались в "Ссылка"). Оставляем первый непустой вариант.
+    if df.columns.duplicated().any():
+        dedup_data: dict[str, pd.Series] = {}
+        for col in df.columns:
+            series = df[col]
+            if isinstance(series, pd.DataFrame):
+                merged = series.bfill(axis=1).iloc[:, 0]
+            else:
+                merged = series
+            if col in dedup_data:
+                dedup_data[col] = dedup_data[col].combine_first(merged)
+            else:
+                dedup_data[col] = merged
+        df = pd.DataFrame(dedup_data)
+
     # добавить отсутствующие столбцы
     for col in EXPECTED_COLS:
         if col not in df.columns:
@@ -212,13 +220,18 @@ def compute_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
     # 2) Рассчитываем "за 12 часов" только если "В час" определено.
     hour_series = df.get("В час", pd.Series(np.nan, index=df.index))
+    shift_length_series = df.get("Длительность смены", pd.Series(np.nan, index=df.index))
+    can_compute_shift_income = (
+        hour_series.notna()
+        & shift_length_series.notna()
+        & (shift_length_series > 0)
+    )
     df["Средний совокупный доход при графике 2/2 по 12 часов"] = np.where(
-        hour_series.notna(),
-        hour_series * 12.0,
+        can_compute_shift_income,
+        hour_series * shift_length_series,
         np.nan,
     )
 
-    # 3) Если "Длительность смены" пусто — оставляем прочерк.
     if "Длительность смены" in df.columns:
         df["Длительность смены"] = df["Длительность смены"].astype(object)
         mask_len = df["Длительность смены"].isna()
@@ -294,7 +307,7 @@ def write_excel(df: pd.DataFrame, path: Path, rates: list[dict] | None = None):
             df["Ссылка"] = (
                 df["Ссылка"]
                 .astype(str)
-                .map(_clean_url)  # твоя функция: чистит m.avito.ru, www, убирает query/fragment
+                .map(_clean_url)
             )
         except Exception:
             pass

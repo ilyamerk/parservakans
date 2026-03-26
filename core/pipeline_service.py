@@ -89,10 +89,6 @@ def run_parser_pipeline(request: ParserRunRequest) -> ParserRunResult:
     ]
     if request.no_filter or not request.role:
         fetch_cmd.append("--no_filter")
-    if request.avito_headful:
-        fetch_cmd.append("--avito_headful")
-    if request.avito_state:
-        fetch_cmd.extend(["--avito_state", request.avito_state])
 
     _set_progress(10, "Собираю вакансии с HH.ru и Avito...")
     _run_cmd(fetch_cmd)

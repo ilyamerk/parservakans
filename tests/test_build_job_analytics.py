@@ -1,7 +1,7 @@
-import pandas as pd
 import numpy as np
+import pandas as pd
 
-from build_job_analytics import compute_metrics, write_excel, RATES_SHEET_BASE
+from build_job_analytics import RATES_SHEET_BASE, compute_metrics, write_excel
 
 
 def test_compute_metrics_sets_dash_for_missing_shift_length():
@@ -14,22 +14,43 @@ def test_compute_metrics_sets_dash_for_missing_shift_length():
             }
         ]
     )
-
     result = compute_metrics(df)
-
     assert result.loc[0, "Длительность смены"] == "-"
 
 
-def test_write_excel_creates_rates_sheet(tmp_path):
+def test_compute_metrics_uses_hourly_and_shift_length_only():
     df = pd.DataFrame(
         [
             {
-                "Должность": "Повар",
-                "В час": 200.0,
-                "Длительность смены": 12,
+                "В час": 458.33,
+                "Длительность смены": 12.0,
+                "Средний совокупный доход при графике 2/2 по 12 часов": np.nan,
             }
         ]
     )
+    result = compute_metrics(df)
+    assert result.loc[0, "Средний совокупный доход при графике 2/2 по 12 часов"] == 5499.96
+
+
+def test_compute_metrics_does_not_infer_hourly_from_monthly_salary():
+    df = pd.DataFrame(
+        [
+            {
+                "ЗП от (т.р.)": 90.0,
+                "В час": np.nan,
+                "Длительность смены": 10.0,
+                "График": "5/2",
+                "Средний совокупный доход при графике 2/2 по 12 часов": np.nan,
+            }
+        ]
+    )
+    result = compute_metrics(df)
+    assert pd.isna(result.loc[0, "В час"])
+    assert pd.isna(result.loc[0, "Средний совокупный доход при графике 2/2 по 12 часов"])
+
+
+def test_write_excel_creates_rates_sheet(tmp_path):
+    df = pd.DataFrame([{"Должность": "Повар", "В час": 200.0, "Длительность смены": 12}])
     rates = [
         {"type": "hourly", "value": "200", "url": "https://example.com"},
         {"type": "shift", "value": "2400", "url": "https://example.com"},
@@ -47,7 +68,7 @@ def test_write_excel_creates_rates_sheet(tmp_path):
 
 
 def test_write_excel_strips_illegal_xml_control_chars(tmp_path):
-    bad_text = "Поварна смену"
+    bad_text = "Повар\x0bна смену"
     df = pd.DataFrame([{"Должность": bad_text, "Ссылка": "https://example.com"}])
 
     out_path = tmp_path / "illegal_chars.xlsx"
@@ -74,7 +95,8 @@ def test_compute_metrics_uses_monthly_formula_with_schedule_mapping():
 
     # (90 / 10 / 22) * 1000 = 409.1 (rounded to 1 decimal)
     assert result.loc[0, "В час"] == 409.1
-    assert result.loc[0, "Средний совокупный доход при графике 2/2 по 12 часов"] == 4909.1
+    # income = hourly * shift_length = 409.1 * 10 = 4091.0
+    assert result.loc[0, "Средний совокупный доход при графике 2/2 по 12 часов"] == 4091.0
 
 
 def test_compute_metrics_skips_unknown_schedule():
@@ -95,3 +117,26 @@ def test_compute_metrics_skips_unknown_schedule():
 
     assert pd.isna(result.loc[0, "В час"])
     assert pd.isna(result.loc[0, "Средний совокупный доход при графике 2/2 по 12 часов"])
+
+
+def test_normalize_columns_keeps_single_link_column():
+    from build_job_analytics import normalize_columns
+
+    df = pd.DataFrame(
+        [
+            {
+                "Ссылка": "https://hh.ru/vacancy/1",
+                "URL": np.nan,
+                "ссылка на вакансию": np.nan,
+            },
+            {
+                "Ссылка": np.nan,
+                "URL": "https://hh.ru/vacancy/2",
+                "ссылка на вакансию": np.nan,
+            },
+        ]
+    )
+    normalized = normalize_columns(df)
+    assert list(normalized.columns).count("Ссылка") == 1
+    assert normalized.loc[0, "Ссылка"] == "https://hh.ru/vacancy/1"
+    assert normalized.loc[1, "Ссылка"] == "https://hh.ru/vacancy/2"
