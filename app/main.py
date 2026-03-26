@@ -78,8 +78,12 @@ def run_from_form(
     def run_in_bg():
         try:
             result = run_parser_pipeline(req)
+            result_dict = asdict(result)
+            for k, v in result_dict.items():
+                if isinstance(v, Path):
+                    result_dict[k] = str(v)
             RUNS[result.run_id] = {
-                "result": asdict(result),
+                "result": result_dict,
                 "request": asdict(req),
             }
             PROGRESS["run_id"] = result.run_id
@@ -117,7 +121,11 @@ def run_api(payload: ParserRunRequest):
         result = run_parser_pipeline(payload)
     except PipelineError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    RUNS[result.run_id] = {"result": asdict(result), "request": asdict(payload)}
+    result_dict = asdict(result)
+    for k, v in result_dict.items():
+        if isinstance(v, Path):
+            result_dict[k] = str(v)
+    RUNS[result.run_id] = {"result": result_dict, "request": asdict(payload)}
     return {"run_id": result.run_id, "row_count": result.row_count}
 
 

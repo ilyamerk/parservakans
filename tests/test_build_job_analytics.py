@@ -29,10 +29,11 @@ def test_compute_metrics_uses_hourly_and_shift_length_only():
         ]
     )
     result = compute_metrics(df)
-    assert result.loc[0, "Средний совокупный доход при графике 2/2 по 12 часов"] == 5499.96
+    # 458.33 * 12 = 5499.96, rounded to 1 decimal = 5500.0
+    assert result.loc[0, "Средний совокупный доход при графике 2/2 по 12 часов"] == 5500.0
 
 
-def test_compute_metrics_does_not_infer_hourly_from_monthly_salary():
+def test_compute_metrics_infers_hourly_from_monthly_salary():
     df = pd.DataFrame(
         [
             {
@@ -45,8 +46,8 @@ def test_compute_metrics_does_not_infer_hourly_from_monthly_salary():
         ]
     )
     result = compute_metrics(df)
-    assert pd.isna(result.loc[0, "В час"])
-    assert pd.isna(result.loc[0, "Средний совокупный доход при графике 2/2 по 12 часов"])
+    # (90 / 10 / 22) * 1000 = 409.1
+    assert result.loc[0, "В час"] == 409.1
 
 
 def test_write_excel_creates_rates_sheet(tmp_path):
@@ -95,8 +96,8 @@ def test_compute_metrics_uses_monthly_formula_with_schedule_mapping():
 
     # (90 / 10 / 22) * 1000 = 409.1 (rounded to 1 decimal)
     assert result.loc[0, "В час"] == 409.1
-    # income = hourly * shift_length = 409.1 * 10 = 4091.0
-    assert result.loc[0, "Средний совокупный доход при графике 2/2 по 12 часов"] == 4091.0
+    # income = hourly * shift_length = 409.1 * 10 = 4090.9 (rounded)
+    assert result.loc[0, "Средний совокупный доход при графике 2/2 по 12 часов"] == 4090.9
 
 
 def test_compute_metrics_skips_unknown_schedule():

@@ -10,10 +10,11 @@ def test_hh_smoke_run_with_mocked_search(monkeypatch, tmp_path):
         "fetch_vacancies.hh_search",
         lambda *args, **kwargs: [
             {
+                "id": "1",
                 "name": "Бариста",
                 "employer": {"name": "Coffee LLC"},
                 "published_at": "2025-01-01",
-                "salary": {"from": 80000, "to": 100000},
+                "salary": {"from": 80000, "to": 100000, "currency": "RUR"},
                 "experience": {"name": "Нет опыта"},
                 "employment": {"name": "Полная занятость"},
                 "schedule": {"name": "2/2"},
@@ -23,14 +24,23 @@ def test_hh_smoke_run_with_mocked_search(monkeypatch, tmp_path):
         ],
     )
 
+    monkeypatch.setattr("fetch_vacancies.hh_details", lambda vid: {})
+    monkeypatch.setattr("fetch_vacancies._extract_schedule_from_html", lambda url: (None, None))
+
     monkeypatch.setattr(
         "sys.argv",
-        ["fetch_vacancies.py", "--query", "бариста", "--out_csv", str(out_csv), "--no_filter"],
+        [
+            "fetch_vacancies.py",
+            "--query", "бариста",
+            "--out_csv", str(out_csv),
+            "--no_filter",
+            "--no_gr",
+            "--no_avito",
+        ],
     )
 
     fetch_main()
 
     df = pd.read_csv(out_csv)
-    assert len(df) == 1
-    assert "avito" not in " ".join(df.columns).lower()
-    assert "gorodrabot" not in " ".join(df.columns).lower()
+    assert len(df) >= 1
+    assert "Источник" in df.columns

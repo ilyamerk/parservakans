@@ -1125,6 +1125,32 @@ class AvitoCollector:
         return None
 
     def collect(self) -> List[Dict[str, object]]:
+        # --- Try Playwright first (handles JS-rendered pages) ---
+        if self._fetcher == self._http_fetch:
+            try:
+                from avito_playwright import AvitoPlaywrightCollector
+                pw_collector = AvitoPlaywrightCollector()
+                pw_records = []
+                for region in self.config.regions:
+                    for query in self.config.queries:
+                        cards = pw_collector.collect(
+                            query=query,
+                            region=region,
+                            pages=self.config.max_pages_per_feed,
+                            per_page=50,
+                        )
+                        pw_records.extend(cards)
+                if pw_records:
+                    print(f"[Avito] метод: playwright")
+                    print(f"[Avito] Playwright returned {len(pw_records)} records")
+                    return pw_records
+                else:
+                    print("[Avito] Playwright returned 0 records, falling back to requests")
+            except Exception as e:
+                print(f"[Avito] Playwright failed ({e}), falling back to requests")
+
+        print("[Avito] метод: requests")
+
         combos = []
         categories = self.config.categories or [None]
         for region in self.config.regions:
