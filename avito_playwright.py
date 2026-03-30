@@ -15,6 +15,18 @@ from typing import Dict, List, Optional
 from urllib.parse import quote
 
 
+# --- Realistic user-agent pool ---
+_USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+]
+
+
 # --- Region slug mapping ---
 _REGION_MAP = {
     "москва": "moskva",
@@ -157,8 +169,15 @@ class AvitoPlaywrightCollector:
         debug_dir.mkdir(parents=True, exist_ok=True)
 
         with sync_playwright() as pw:
+            # Stealth launch args to reduce bot detection
+            stealth_args = [
+                "--disable-blink-features=AutomationControlled",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-infobars",
+            ]
             # Try default launch first; fall back to known Chromium paths
-            launch_kwargs = {"headless": True}
+            launch_kwargs = {"headless": True, "args": stealth_args}
             try:
                 browser = pw.chromium.launch(**launch_kwargs)
             except Exception as launch_err:
@@ -182,15 +201,19 @@ class AvitoPlaywrightCollector:
                     if chromium_path:
                         launch_kwargs["executable_path"] = chromium_path
                     browser = pw.chromium.launch(**launch_kwargs)
+
+            chosen_ua = random.choice(_USER_AGENTS)
+            print(f"[Avito/pw] using UA: {chosen_ua[:60]}...")
             context = browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/131.0.0.0 Safari/537.36"
-                ),
+                user_agent=chosen_ua,
                 viewport={"width": 1920, "height": 1080},
                 locale="ru-RU",
+                ignore_https_errors=True,
             )
+            # Remove navigator.webdriver flag to appear more human-like
+            context.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            """)
             page = context.new_page()
 
             for page_num in range(1, pages + 1):
@@ -204,7 +227,17 @@ class AvitoPlaywrightCollector:
                     page.goto(url, wait_until="domcontentloaded", timeout=30000)
                 except Exception as e:
                     print(f"[Avito/pw] page.goto failed: {e}")
+                    # Save debug screenshot even on navigation failure
+                    screenshot_path = debug_dir / f"avito_debug.png"
+                    try:
+                        page.screenshot(path=str(screenshot_path))
+                        print(f"[Avito/pw] debug screenshot saved: {screenshot_path}")
+                    except Exception:
+                        pass
                     continue
+
+                # Wait after page load to let JS render and reduce bot detection
+                page.wait_for_timeout(3000)
 
                 # Wait for vacancy cards to appear
                 cards_found = False
@@ -218,7 +251,7 @@ class AvitoPlaywrightCollector:
 
                 if not cards_found:
                     # Save debug screenshot
-                    screenshot_path = debug_dir / f"avito_page_{page_num}.png"
+                    screenshot_path = debug_dir / f"avito_debug.png"
                     try:
                         page.screenshot(path=str(screenshot_path))
                         print(f"[Avito/pw] debug screenshot saved: {screenshot_path}")
@@ -231,12 +264,13 @@ class AvitoPlaywrightCollector:
 
                 # Scroll down to trigger lazy loading
                 page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
-                page.wait_for_timeout(1000)
+                page.wait_for_timeout(1500)
                 page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                page.wait_for_timeout(1000)
+                page.wait_for_timeout(1500)
 
                 # Extract cards
                 page_cards = self._extract_cards(page)
+                print(f"[Avito/pw] page {page_num}: found {len(page_cards)} cards")
                 results.extend(page_cards)
 
                 if len(results) >= per_page * pages:
