@@ -20,6 +20,11 @@ from urllib3.util.retry import Retry
 
 from avito_source import AvitoCollector, AvitoConfig
 
+try:
+    from avito_playwright import AvitoPlaywrightCollector
+except ImportError:
+    AvitoPlaywrightCollector = None  # type: ignore[misc,assignment]
+
 _AVITO_RPS = 0.35  # ~1 запрос каждые ~3 сек
 _GR_RPS    = 0.50  # ~1 запрос каждые 2 сек
 
@@ -3207,6 +3212,25 @@ def main():
     else:
         print("[Avito] пропущен (--no_avito)")
 
+    # Avito Playwright (дополнительный сбор через headless-браузер)
+    rows_avito_pw = []
+    if not a.no_avito and AvitoPlaywrightCollector is not None:
+        try:
+            pw_collector = AvitoPlaywrightCollector()
+            pw_records = pw_collector.collect(
+                query=a.query,
+                region=a.city,
+                pages=getattr(a, "avito_max_pages", None) or a.pages,
+            )
+            print(f"[Avito/pw] collect() returned {len(pw_records)} records")
+            rows_avito_pw = [_legacy_row_from_avito_record(r) for r in pw_records]
+            print(f"[Avito/pw] after conversion: {len(rows_avito_pw)} rows")
+        except Exception as e:
+            print(f"[Avito/pw] пропущен: {e}")
+    elif AvitoPlaywrightCollector is None:
+        print("[Avito/pw] пропущен (playwright не установлен)")
+
+    rows_avito = rows_avito + rows_avito_pw
     rows = rows_hh + gr_rows + rows_avito
     print(f"HH: {len(rows_hh)} | GR: {len(gr_rows)} | Avito: {len(rows_avito)} | Total before filter: {len(rows)}")
 
