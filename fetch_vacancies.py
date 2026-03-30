@@ -3231,6 +3231,8 @@ def main():
         print("[Avito/pw] пропущен (playwright не установлен)")
 
     rows_avito = rows_avito + rows_avito_pw
+    print(f"[DEBUG] rows_avito count: {len(rows_avito)}")
+    print(f"[DEBUG] sample Источник: {rows_avito[0].get('Источник') if rows_avito else 'N/A'}")
     rows = rows_hh + gr_rows + rows_avito
     print(f"HH: {len(rows_hh)} | GR: {len(gr_rows)} | Avito: {len(rows_avito)} | Total before filter: {len(rows)}")
 
