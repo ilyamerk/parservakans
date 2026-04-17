@@ -299,7 +299,7 @@ def _format_sheet(xl, ws, sheet_df, fmt_link, fmt_num2, fmt_int):
         ws.set_column(idx, idx, min(max_len + 2, 60))
 
 
-def write_excel(df: pd.DataFrame, path: Path, rates: list[dict] | None = None):
+def write_excel(df: pd.DataFrame, path: Path, rates: list[dict] | None = None, avito_unavailable: bool = False):
     df = sanitize_excel_strings(df)
     # 1) Нормализуем колонку со ссылками заранее (если есть)
     if "Ссылка" in df.columns:
@@ -344,6 +344,8 @@ def write_excel(df: pd.DataFrame, path: Path, rates: list[dict] | None = None):
             src_df.to_excel(xl, sheet_name=src_sheet_name, index=False)
             src_ws = xl.sheets[src_sheet_name]
             _format_sheet(xl, src_ws, src_df, fmt_link, fmt_num2, fmt_int)
+            if sheet_label == "Avito" and avito_unavailable and src_df.empty:
+                src_ws.write(1, 0, "Avito недоступен в текущем окружении")
 
         if rates:
             sheet_name = unique_sheet_name(xl, RATES_SHEET_BASE)
