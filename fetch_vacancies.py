@@ -76,12 +76,21 @@ def _polite_get(sess, url: str, timeout: float, site: str):
         return None
 
 
+# HH API enforces its own User-Agent policy: requests with browser-style
+# UA ("Mozilla/5.0 ... Chrome/...") are rejected with 403. The required
+# format is ``AppName/Version (contact)``. See https://api.hh.ru/openapi.
+HH_HEADERS = {
+    "User-Agent": "parservakans/1.0 (+https://github.com/ilyamerk/parservakans)",
+    "Accept": "application/json",
+    "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+}
+
 _SESS = None
 def _get_sess():
     global _SESS
     if _SESS is None:
         s = requests.Session()
-        s.headers.update(HEADERS)
+        s.headers.update(HH_HEADERS)
         retry = Retry(
             total=3,
             connect=3,
@@ -1981,6 +1990,11 @@ def hh_search(
         try:
             r = sess.get("https://api.hh.ru/vacancies", params=p, timeout=_TIMEOUT)
             if r.status_code != 200:
+                snippet = (r.text or "")[:200].replace("\n", " ")
+                print(f"[HH] search non-200 (page={page}, status={r.status_code}): {snippet}")
+                if r.status_code in (401, 403):
+                    print("[HH] 403/401 обычно означает, что HH API отверг User-Agent. "
+                          "Проверьте формат 'AppName/Version (contact)'.")
                 break
             data = r.json()
             items += data.get("items", [])
