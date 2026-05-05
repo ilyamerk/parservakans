@@ -4,3 +4,6 @@ Exports/*.csv
 Exports/*.json
 Exports/*.xlsx
 Exports/_debug/
+.env
+.env.local
+.env.*.local

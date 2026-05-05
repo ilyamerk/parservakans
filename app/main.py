@@ -5,6 +5,14 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+ROOT = Path(__file__).resolve().parent.parent
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv(ROOT / ".env")
+except ImportError:
+    pass
+
 import pandas as pd
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -14,7 +22,6 @@ from fastapi.templating import Jinja2Templates
 from core.pipeline_service import PipelineError, run_parser_pipeline, PROGRESS
 from core.schemas import ParserRunRequest
 
-ROOT = Path(__file__).resolve().parent.parent
 app = FastAPI(title="Parser Vakans")
 app.mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static")
 templates = Jinja2Templates(directory=str(ROOT / "templates"))
