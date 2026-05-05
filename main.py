@@ -6,6 +6,13 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv(ROOT / ".env")
+except ImportError:
+    pass
+
 EXPORT_DIR = ROOT / "Exports"
 EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 

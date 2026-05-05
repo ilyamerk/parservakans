@@ -1,5 +1,6 @@
 # parsers/fetch_vacancies.py  — версия с Avito (requests -> fallback на Playwright)
 import argparse, requests, html
+import os
 from dataclasses import dataclass
 from typing import Tuple, Optional
 from datetime import datetime, timedelta, timezone
@@ -17,6 +18,12 @@ import threading, random
 from urllib.parse import urlparse
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parent / ".env")
+except ImportError:
+    pass
 
 from avito_source import AvitoCollector, AvitoConfig
 
@@ -90,6 +97,36 @@ def _get_sess():
         s.mount("http://", adapter)
         _SESS = s
     return _SESS
+
+
+# HH API requires "AppName/Version (contact)" User-Agent and Bearer auth.
+# See https://api.hh.ru/openapi
+HH_HEADERS = {
+    "User-Agent": "parservakans/1.0 (+https://github.com/ilyamerk/parservakans)",
+    "Accept": "application/json",
+    "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+}
+_HH_APP_TOKEN = (os.getenv("HH_APP_TOKEN") or "").strip()
+if _HH_APP_TOKEN:
+    HH_HEADERS["Authorization"] = f"Bearer {_HH_APP_TOKEN}"
+
+_HH_SESS = None
+def _get_hh_sess():
+    global _HH_SESS
+    if _HH_SESS is None:
+        s = requests.Session()
+        s.headers.update(HH_HEADERS)
+        retry = Retry(
+            total=3, connect=3, read=3,
+            backoff_factor=0.5,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET"],
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        s.mount("https://", adapter)
+        s.mount("http://", adapter)
+        _HH_SESS = s
+    return _HH_SESS
 
 
 
@@ -1966,7 +2003,7 @@ def hh_search(
     search_in: str,
     start_page: int = 0,
 ) -> List[Dict[str, Any]]:
-    sess = _get_sess()
+    sess = _get_hh_sess()
     items = []
     for offset in range(pages):
         page = start_page + offset
@@ -1976,6 +2013,11 @@ def hh_search(
         try:
             r = sess.get("https://api.hh.ru/vacancies", params=p, timeout=_TIMEOUT)
             if r.status_code != 200:
+                snippet = (r.text or "")[:200].replace("\n", " ")
+                print(f"[HH] search non-200 (page={page}, status={r.status_code}): {snippet}")
+                if r.status_code in (401, 403):
+                    print("[HH] 401/403: проверьте HH_APP_TOKEN в .env и формат "
+                          "User-Agent 'AppName/Version (contact)'.")
                 break
             data = r.json()
             items += data.get("items", [])
@@ -1988,7 +2030,7 @@ def hh_search(
     return items
 
 def hh_details(vac_id: str) -> dict:
-    sess = _get_sess()
+    sess = _get_hh_sess()
     try:
         r = sess.get(f"https://api.hh.ru/vacancies/{vac_id}", timeout=_TIMEOUT)
         if r.status_code == 200:
