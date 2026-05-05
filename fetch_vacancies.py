@@ -92,7 +92,11 @@ HH_HEADERS = {
     "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
 }
 
-_HH_APP_TOKEN = os.getenv("HH_APP_TOKEN", "").strip()
+try:
+    from core.api_keys import get_key as _get_api_key
+    _HH_APP_TOKEN = _get_api_key("HH_APP_TOKEN")
+except ImportError:
+    _HH_APP_TOKEN = os.getenv("HH_APP_TOKEN", "").strip()
 if _HH_APP_TOKEN:
     HH_HEADERS["Authorization"] = f"Bearer {_HH_APP_TOKEN}"
 

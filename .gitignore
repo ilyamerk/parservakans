@@ -7,3 +7,4 @@ Exports/_debug/
 .env
 .env.local
 .env.*.local
+api_keys.json
