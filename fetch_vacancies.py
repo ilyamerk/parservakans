@@ -94,7 +94,7 @@ HH_HEADERS = {
 
 _HH_APP_TOKEN = os.getenv("HH_APP_TOKEN", "").strip()
 if _HH_APP_TOKEN:
-    HH_HEADERS["Authorization"] = f"ApplicantToken {_HH_APP_TOKEN}"
+    HH_HEADERS["Authorization"] = f"Bearer {_HH_APP_TOKEN}"
 
 _SESS = None
 def _get_sess():
