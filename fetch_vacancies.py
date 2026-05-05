@@ -1,5 +1,6 @@
 # parsers/fetch_vacancies.py  — версия с Avito (requests -> fallback на Playwright)
 import argparse, requests, html
+import os
 from dataclasses import dataclass
 from typing import Tuple, Optional
 from datetime import datetime, timedelta, timezone
@@ -17,6 +18,12 @@ import threading, random
 from urllib.parse import urlparse
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parent / ".env")
+except ImportError:
+    pass
 
 from avito_source import AvitoCollector, AvitoConfig
 
@@ -84,6 +91,10 @@ HH_HEADERS = {
     "Accept": "application/json",
     "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
 }
+
+_HH_APP_TOKEN = os.getenv("HH_APP_TOKEN", "").strip()
+if _HH_APP_TOKEN:
+    HH_HEADERS["Authorization"] = f"ApplicantToken {_HH_APP_TOKEN}"
 
 _SESS = None
 def _get_sess():
