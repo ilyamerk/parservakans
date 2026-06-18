@@ -87,7 +87,7 @@ def _polite_get(sess, url: str, timeout: float, site: str):
 # UA ("Mozilla/5.0 ... Chrome/...") are rejected with 403. The required
 # format is ``AppName/Version (contact)``. See https://api.hh.ru/openapi.
 HH_HEADERS = {
-    "User-Agent": "parservakans/1.0 (+https://github.com/ilyamerk/parservakans)",
+    "User-Agent": "ParserVakans/1.0 (contact@example.com)",
     "Accept": "application/json",
     "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
 }
@@ -3190,76 +3190,15 @@ def main():
     else:
         print("[GR] пропущен (--no_gr)")
 
-    # Avito (опционально)
+    # Avito временно недоступен из Codespace окружения (429 по IP).
+    # Официальный API требует регистрации партнёра.
     rows_avito = []
+    avito_unavailable = False
     if not a.no_avito:
-        try:
-            def _split_csv(value: str, fallback: List[str]) -> List[str]:
-                if value:
-                    items = [part.strip() for part in value.split(",") if part.strip()]
-                    if items:
-                        return items
-                return fallback
-
-            av_regions = _split_csv(getattr(a, "avito_regions", ""), [a.city])
-            av_queries = _split_csv(getattr(a, "avito_queries", ""), [a.query])
-            av_categories = _split_csv(getattr(a, "avito_categories", ""), [])
-            av_pages = getattr(a, "avito_max_pages", None) or a.pages
-            av_config = AvitoConfig(
-                regions=av_regions,
-                queries=av_queries,
-                categories=av_categories,
-                date_range=getattr(a, "avito_date_range", "") or None,
-                max_pages_per_feed=av_pages,
-                only_with_salary=getattr(a, "avito_only_with_salary", False),
-                request_timeout=20.0,
-                base_delay=4.0,
-                qa_output_dir=EXPORT_DIR / "_avito_qa",
-            )
-            print(f"[Avito] config: regions={av_regions} queries={av_queries} pages={av_pages}")
-            from avito_source import _slugify_region
-            print(f"[Avito] region slugs: {[_slugify_region(r) for r in av_regions]}")
-            avito_collector = AvitoCollector(config=av_config)
-            avito_records = avito_collector.collect()
-            print(f"[Avito] collect() returned {len(avito_records)} records (before legacy conversion)")
-            print(f"[Avito] stats: {avito_collector.stats}")
-            rows_avito = [_legacy_row_from_avito_record(r) for r in avito_records]
-            print(f"[Avito] after _legacy_row_from_avito_record: {len(rows_avito)} rows")
-
-            # сохранить полные данные в JSON для дальнейшей выгрузки/QA
-            try:
-                out_path = EXPORT_DIR / "avito_records.json"
-                payload = [
-                    {k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in record.items()}
-                    for record in avito_records
-                ]
-                out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            except Exception:
-                pass
-        except Exception as e:
-            print(f"[Avito] пропущен: {e}")
+        print("[Avito] недоступен из текущего окружения (429), пропускаем")
+        avito_unavailable = True
     else:
         print("[Avito] пропущен (--no_avito)")
-
-    # Avito Playwright (дополнительный сбор через headless-браузер)
-    rows_avito_pw = []
-    if not a.no_avito and AvitoPlaywrightCollector is not None:
-        try:
-            pw_collector = AvitoPlaywrightCollector()
-            pw_records = pw_collector.collect(
-                query=a.query,
-                region=a.city,
-                pages=getattr(a, "avito_max_pages", None) or a.pages,
-            )
-            print(f"[Avito/pw] collect() returned {len(pw_records)} records")
-            rows_avito_pw = [_legacy_row_from_avito_record(r) for r in pw_records]
-            print(f"[Avito/pw] after conversion: {len(rows_avito_pw)} rows")
-        except Exception as e:
-            print(f"[Avito/pw] пропущен: {e}")
-    elif AvitoPlaywrightCollector is None:
-        print("[Avito/pw] пропущен (playwright не установлен)")
-
-    rows_avito = rows_avito + rows_avito_pw
     print(f"[DEBUG] rows_avito count: {len(rows_avito)}")
     print(f"[DEBUG] sample Источник: {rows_avito[0].get('Источник') if rows_avito else 'N/A'}")
     rows = rows_hh + gr_rows + rows_avito
@@ -3326,7 +3265,7 @@ def main():
     df_analytics = normalize_columns(df_x)
     df_analytics = coerce_numbers(df_analytics)
     df_analytics = compute_metrics(df_analytics)
-    _write_excel(df_analytics, xlsx_path, rates=rate_rows or None)
+    _write_excel(df_analytics, xlsx_path, rates=rate_rows or None, avito_unavailable=avito_unavailable)
     print(f"Wrote {len(df_analytics)} rows -> {xlsx_path}")
 
 if __name__ == "__main__":
